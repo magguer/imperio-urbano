@@ -1,5 +1,14 @@
 // Sistema de negociación entre jugadores
-import { BOARD, COLORS } from './board.js';
+import { BOARD, COLORS, THEME } from './board.js';
+import { DEFAULT_BUILDINGS } from './themes/shared.js';
+
+const tb = () => THEME?.strings?.buildings ?? DEFAULT_BUILDINGS;
+
+function formatBuildingBadge(count) {
+  if (!count) return '';
+  if (count === 5) return tb().hotelEmoji;
+  return `${count}${tb().houseEmoji}`;
+}
 
 export function createTradeOffer() {
   return {
@@ -87,7 +96,7 @@ export function renderPropertyCheckboxes(state, playerId, prefix, selected = [])
     const color = COLORS[cell.color]?.bg || '#666';
     const checked = selected.includes(id) ? 'checked' : '';
     const extras = [];
-    if (prop.houses > 0) extras.push(prop.houses === 5 ? '🏨' : `${prop.houses}🏠`);
+    if (prop.houses > 0) extras.push(formatBuildingBadge(prop.houses));
     if (prop.mortgaged) extras.push('HIP');
     return `
       <label class="trade-prop">

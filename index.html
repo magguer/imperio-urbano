@@ -8,60 +8,105 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
   <link rel="stylesheet" href="css/style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link id="theme-font" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
   <!-- Pantalla de configuración -->
-  <div id="setup-screen" class="screen">
-    <div class="setup-card">
-      <div class="logo">
-        <span class="logo-icon">🏙️</span>
-        <h1>Imperio Urbano</h1>
-        <p class="subtitle">Construye tu imperio inmobiliario. Multijugador local en un solo dispositivo.</p>
-      </div>
+  <div id="setup-screen" class="screen setup-screen">
+    <div class="setup-layout">
+      <main class="setup-main">
+        <header class="setup-hero">
+          <div class="logo">
+            <div class="logo-icon-wrap">
+              <span class="logo-icon">🏙️</span>
+            </div>
+            <h1>Imperio Urbano</h1>
+            <p class="subtitle">Construye tu imperio inmobiliario. Multijugador local en un solo dispositivo.</p>
+          </div>
+        </header>
 
-      <div class="setup-form">
-        <label for="player-count">Número de jugadores</label>
-        <select id="player-count">
-          <option value="2">2 jugadores</option>
-          <option value="3">3 jugadores</option>
-          <option value="4" selected>4 jugadores</option>
-          <option value="5">5 jugadores</option>
-          <option value="6">6 jugadores</option>
-        </select>
+        <div class="setup-form">
+          <section class="setup-section">
+            <h2 class="setup-section-title">
+              <i class="fa-solid fa-palette" aria-hidden="true"></i>
+              Elige tu tema
+            </h2>
+            <div id="theme-picker" class="theme-picker"></div>
+          </section>
 
-        <div id="player-names"></div>
+          <section class="setup-section">
+            <h2 class="setup-section-title">
+              <i class="fa-solid fa-gauge-high" aria-hidden="true"></i>
+              Dificultad
+            </h2>
+            <div id="difficulty-picker" class="difficulty-picker"></div>
+            <p id="difficulty-summary" class="difficulty-summary" aria-live="polite"></p>
+          </section>
 
-        <div id="resume-section" class="resume-section hidden">
-          <p class="resume-label">Tienes una partida guardada</p>
-          <p id="resume-summary" class="resume-summary"></p>
-          <button id="resume-btn" class="btn btn-primary btn-large">Continuar partida</button>
-          <button id="discard-save-btn" class="btn btn-ghost">Empezar partida nueva</button>
+          <section class="setup-section">
+            <h2 class="setup-section-title">
+              <i class="fa-solid fa-users" aria-hidden="true"></i>
+              Jugadores
+            </h2>
+            <label class="setup-field-label" for="player-count">Número de jugadores</label>
+            <select id="player-count">
+              <option value="2">2 jugadores</option>
+              <option value="3">3 jugadores</option>
+              <option value="4" selected>4 jugadores</option>
+              <option value="5">5 jugadores</option>
+              <option value="6">6 jugadores</option>
+            </select>
+            <div id="player-names" class="player-names-grid"></div>
+            <p class="setup-hint">Marca «Computadora (IA)» para rivales automáticos. Su nivel depende de la dificultad elegida.</p>
+          </section>
+
+          <div id="resume-section" class="resume-section hidden">
+            <div class="resume-section-header">
+              <i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>
+              <p class="resume-label">Partida guardada</p>
+            </div>
+            <p id="resume-summary" class="resume-summary"></p>
+            <button id="resume-btn" class="btn btn-primary btn-large">Continuar partida</button>
+            <button id="discard-save-btn" class="btn btn-ghost">Empezar partida nueva</button>
+          </div>
+
+          <div class="setup-actions">
+            <button id="start-btn" class="btn btn-primary btn-large btn-start">
+              <i class="fa-solid fa-play" aria-hidden="true"></i>
+              ¡Empezar partida!
+            </button>
+          </div>
+
+          <details class="import-section">
+            <summary>
+              <i class="fa-solid fa-file-import" aria-hidden="true"></i>
+              Restaurar desde copia de seguridad
+            </summary>
+            <p class="import-hint">Pega aquí el JSON exportado desde otra sesión o dispositivo.</p>
+            <textarea id="import-save" rows="4" placeholder='{"version":1,...}'></textarea>
+            <button id="import-btn" class="btn">Importar y continuar</button>
+          </details>
         </div>
+      </main>
 
-        <button id="start-btn" class="btn btn-primary btn-large">¡Empezar partida!</button>
-
-        <details class="import-section">
-          <summary>Restaurar partida desde copia de seguridad</summary>
-          <p class="import-hint">Pega aquí el JSON exportado desde otra sesión o dispositivo.</p>
-          <textarea id="import-save" rows="4" placeholder='{"version":1,...}'></textarea>
-          <button id="import-btn" class="btn">Importar y continuar</button>
-        </details>
-      </div>
-
-      <div class="rules-summary">
-        <h3>Cómo jugar</h3>
-        <ul>
-          <li>Pasa por <strong>SALIDA</strong> y cobra $200</li>
-          <li>Compra propiedades, cobra alquileres y construye casas/hoteles</li>
-          <li>Completa grupos de color para monopolio y construcción</li>
-          <li><strong>Negocia</strong> propiedades, dinero y cartas con otros jugadores</li>
-          <li>Si no compras, la propiedad se <strong>subasta</strong> entre todos</li>
-          <li>Impuestos y multas van al fondo de <strong>Zona Libre</strong></li>
-          <li>Hipoteca propiedades para obtener liquidez rápida</li>
-          <li>El último jugador en pie gana la ciudad</li>
-        </ul>
-      </div>
+      <aside class="setup-aside">
+        <div class="rules-summary">
+          <h3>
+            <i class="fa-solid fa-book-open" aria-hidden="true"></i>
+            Cómo jugar
+          </h3>
+          <ul>
+            <li>Pasa por <strong>SALIDA</strong> y cobra $200</li>
+            <li>Compra propiedades, cobra alquileres y construye casas/hoteles</li>
+            <li>Completa grupos de color para monopolio y construcción</li>
+            <li><strong>Negocia</strong> propiedades, dinero y cartas con otros jugadores</li>
+            <li>Si no compras, la propiedad se <strong>subasta</strong> entre todos</li>
+            <li>Impuestos y multas van al fondo de <strong>Zona Libre</strong></li>
+            <li>Hipoteca propiedades para obtener liquidez rápida</li>
+            <li>El último jugador en pie gana la ciudad</li>
+          </ul>
+        </div>
+      </aside>
     </div>
   </div>
 
@@ -78,11 +123,54 @@
       </main>
 
       <aside class="sidebar right">
-        <h2>Acciones</h2>
+        <div class="sidebar-head">
+          <h2>Propiedades</h2>
+          <button type="button" id="settings-btn" class="icon-btn" title="Ajustes" aria-label="Abrir ajustes">
+            <i class="fa-solid fa-gear"></i>
+          </button>
+        </div>
         <div id="actions-panel"></div>
         <h2>Historial</h2>
         <div id="game-log" class="game-log"></div>
       </aside>
+    </div>
+  </div>
+
+  <!-- Ajustes (durante la partida) -->
+  <div id="settings-panel" class="settings-panel hidden" role="dialog" aria-labelledby="settings-title" aria-modal="true">
+    <div class="settings-backdrop" id="settings-backdrop"></div>
+    <div class="settings-sheet">
+      <div class="settings-header">
+        <h2 id="settings-title">Ajustes</h2>
+        <button type="button" id="settings-close" class="icon-btn" aria-label="Cerrar ajustes">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="settings-body">
+        <button type="button" id="settings-copy" class="settings-row">
+          <span class="settings-row-icon"><i class="fa-solid fa-copy"></i></span>
+          <span class="settings-row-text">
+            <strong>Copiar partida</strong>
+            <small>Guarda un JSON en el portapapeles</small>
+          </span>
+        </button>
+        <button type="button" id="settings-sound" class="settings-row">
+          <span class="settings-row-icon"><i class="fa-solid fa-volume-high"></i></span>
+          <span class="settings-row-text">
+            <strong id="settings-sound-label">Sonido</strong>
+            <small id="settings-sound-hint">Efectos de dados, fichas y cartas</small>
+          </span>
+          <span class="settings-toggle" id="settings-sound-toggle" aria-hidden="true"></span>
+        </button>
+        <div class="settings-divider"></div>
+        <button type="button" id="settings-menu" class="settings-row settings-row-danger">
+          <span class="settings-row-icon"><i class="fa-solid fa-house"></i></span>
+          <span class="settings-row-text">
+            <strong>Volver al menú principal</strong>
+            <small>La partida se guarda automáticamente</small>
+          </span>
+        </button>
+      </div>
     </div>
   </div>
 

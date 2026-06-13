@@ -1,0 +1,22 @@
+{
+  "name": "imperio-urbano",
+  "version": "1.0.0",
+  "description": "Juego de mesa local multijugador en JavaScript con tablero y animaciones 3D.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node server.js",
+    "check": "node --check server.js && node --check js/game.js && node --check js/board.js && node --check js/cards.js && node --check js/trade.js && node --check js/auction.js"
+  },
+  "keywords": [
+    "javascript",
+    "board-game",
+    "3d",
+    "monopoly-like"
+  ],
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@3d-dice/dice-box": "^1.1.4"
+  }
+}

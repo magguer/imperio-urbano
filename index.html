@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Imperio Urbano — Juego de Mesa Local</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" integrity="sha512-c42qTSw/wPZ3/5LBzD+Bw5f7bSF2oxou6wEb+I/lqeaKV5FDIfMvvRp772y4jcJLKuGUOpbJMdg/BTl50fJYAw==" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Pantalla de configuración -->
+  <div id="setup-screen" class="screen">
+    <div class="setup-card">
+      <div class="logo">
+        <span class="logo-icon">🏙️</span>
+        <h1>Imperio Urbano</h1>
+        <p class="subtitle">Construye tu imperio inmobiliario. Multijugador local en un solo dispositivo.</p>
+      </div>
+
+      <div class="setup-form">
+        <label for="player-count">Número de jugadores</label>
+        <select id="player-count">
+          <option value="2">2 jugadores</option>
+          <option value="3">3 jugadores</option>
+          <option value="4" selected>4 jugadores</option>
+          <option value="5">5 jugadores</option>
+          <option value="6">6 jugadores</option>
+        </select>
+
+        <div id="player-names"></div>
+
+        <div id="resume-section" class="resume-section hidden">
+          <p class="resume-label">Tienes una partida guardada</p>
+          <p id="resume-summary" class="resume-summary"></p>
+          <button id="resume-btn" class="btn btn-primary btn-large">Continuar partida</button>
+          <button id="discard-save-btn" class="btn btn-ghost">Empezar partida nueva</button>
+        </div>
+
+        <button id="start-btn" class="btn btn-primary btn-large">¡Empezar partida!</button>
+
+        <details class="import-section">
+          <summary>Restaurar partida desde copia de seguridad</summary>
+          <p class="import-hint">Pega aquí el JSON exportado desde otra sesión o dispositivo.</p>
+          <textarea id="import-save" rows="4" placeholder='{"version":1,...}'></textarea>
+          <button id="import-btn" class="btn">Importar y continuar</button>
+        </details>
+      </div>
+
+      <div class="rules-summary">
+        <h3>Cómo jugar</h3>
+        <ul>
+          <li>Pasa por <strong>SALIDA</strong> y cobra $200</li>
+          <li>Compra propiedades, cobra alquileres y construye casas/hoteles</li>
+          <li>Completa grupos de color para monopolio y construcción</li>
+          <li><strong>Negocia</strong> propiedades, dinero y cartas con otros jugadores</li>
+          <li>Si no compras, la propiedad se <strong>subasta</strong> entre todos</li>
+          <li>Impuestos y multas van al fondo de <strong>Zona Libre</strong></li>
+          <li>Hipoteca propiedades para obtener liquidez rápida</li>
+          <li>El último jugador en pie gana la ciudad</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pantalla de juego -->
+  <div id="game-screen" class="screen hidden">
+    <div class="game-layout">
+      <aside class="sidebar left">
+        <h2>Jugadores</h2>
+        <div id="players-panel"></div>
+      </aside>
+
+      <main class="board-container">
+        <div id="board" class="board"></div>
+      </main>
+
+      <aside class="sidebar right">
+        <h2>Acciones</h2>
+        <div id="actions-panel"></div>
+        <h2>Historial</h2>
+        <div id="game-log" class="game-log"></div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h2 id="modal-title"></h2>
+      <div id="modal-body"></div>
+      <div id="modal-actions" class="modal-actions"></div>
+    </div>
+  </div>
+
+  <script type="module" src="js/game.js"></script>
+</body>
+</html>

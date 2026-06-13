@@ -44,3 +44,13 @@ Luego abre la URL que aparece en la terminal. Por defecto intenta `http://localh
 ## Tema original
 
 Nombres, cartas y diseño son propios para evitar problemas de copyright. La diversión es la misma: ¡compra barato, cobra caro y domina la ciudad!
+
+## Deploy en Vercel
+
+1. Importa el repo [github.com/magguer/imperio-urbano](https://github.com/magguer/imperio-urbano) en Vercel.
+2. **Framework Preset:** Other (sin framework).
+3. **Build Command:** déjalo vacío (o usa el script `vercel-build`).
+4. **Output Directory:** déjalo vacío / `.` (raíz del repo).
+5. **Root Directory:** vacío (no subcarpetas).
+
+El archivo `vercel.json` ya configura cabeceras para WASM/JS y el fallback a `index.html`. En Vercel no hace falta `npm start`; el juego se sirve como sitio estático.

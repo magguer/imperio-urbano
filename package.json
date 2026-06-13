@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "serve": "node server.js",
+    "vercel-build": "echo 'Static site — no build step'",
     "check": "node --check server.js && node --check js/game.js && node --check js/board.js && node --check js/cards.js && node --check js/trade.js && node --check js/auction.js"
   },
   "keywords": [

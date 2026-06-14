@@ -43,6 +43,7 @@ let tradeDraft = null;
 let movingTokenId = null;
 let diceBox = null;
 let diceBoxReady = false;
+let diceBoxInitPromise = null;
 let activeBoardCard = null;
 let expandedPlayerId = null;
 let aiTurnScheduled = false;
@@ -1689,12 +1690,12 @@ function paintBoardCard() {
   if (!activeBoardCard) return;
 
   const card = $('#board-card');
-  const defaultView = $('#board-center-default');
+  const play = $('.board-center-play');
   const content = $('#board-card-content');
   const actions = $('#board-card-actions');
   if (!card || !content || !actions) return;
 
-  defaultView?.classList.add('hidden');
+  play?.classList.add('hidden');
   card.classList.remove('hidden');
   content.innerHTML = activeBoardCard.body;
   actions.innerHTML = '';
@@ -1710,9 +1711,9 @@ function paintBoardCard() {
 function closeBoardCard() {
   activeBoardCard = null;
   const card = $('#board-card');
-  const defaultView = $('#board-center-default');
+  const play = $('.board-center-play');
   if (card) card.classList.add('hidden');
-  if (defaultView) defaultView.classList.remove('hidden');
+  play?.classList.remove('hidden');
 }
 
 function buildPropertyCardHtml(cellId, extra = '') {
@@ -1817,75 +1818,141 @@ function showRaiseFundsModal(playerId, amount, reason) {
 // ─── Dados 3D ────────────────────────────────────────────────
 const DICE_BASE = `${window.location.origin}/vendor/dice-box/`;
 
-async function initDiceBox() {
-  if (diceBoxReady) return true;
+function waitForLayout() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
 
-  const container = $('#dice-box');
+function syncDiceBoxSize() {
+  if (!diceBox?.canvas?.isConnected) return;
+  const box = $('#dice-box');
   const stage = $('#dice-stage');
-  if (!container || !stage) return false;
+  const overlay = $('#dice-overlay');
+  const width = box?.clientWidth || stage?.clientWidth || overlay?.clientWidth || 0;
+  const height = box?.clientHeight || stage?.clientHeight || overlay?.clientHeight || 0;
+  if (width > 0 && height > 0) {
+    window.dispatchEvent(new Event('resize'));
+  }
+}
+
+function resetDiceBox() {
+  diceBoxReady = false;
+  diceBox = null;
+  diceBoxInitPromise = null;
+}
+
+async function initDiceBox() {
+  if (diceBoxReady && diceBox?.canvas?.isConnected) {
+    syncDiceBoxSize();
+    return true;
+  }
+
+  if (diceBox?.canvas && !diceBox.canvas.isConnected) {
+    resetDiceBox();
+  }
+
+  if (diceBoxInitPromise) return diceBoxInitPromise;
+
+  diceBoxInitPromise = (async () => {
+    const container = $('#dice-box');
+    const stage = $('#dice-stage');
+    if (!container?.isConnected || !stage) return false;
+
+    await waitForLayout();
+
+    try {
+      const { default: DiceBox } = await import(`${DICE_BASE}dice-box.es.min.js`);
+      if (!container.isConnected) return false;
+
+      diceBox = new DiceBox({
+        container: '#dice-box',
+        assetPath: 'assets/',
+        origin: DICE_BASE,
+        themeColor: '#ffffff',
+        scale: 4,
+        enableShadows: true,
+        offscreen: false,
+      });
+      await diceBox.init();
+      if (!container.isConnected) {
+        resetDiceBox();
+        return false;
+      }
+
+      diceBoxReady = true;
+      stage.classList.add('webgl-ready');
+      stage.classList.remove('fallback-ready');
+      diceBox.show?.();
+      syncDiceBoxSize();
+      return true;
+    } catch (error) {
+      console.error('Dados 3D no disponibles:', error);
+      stage?.classList.add('fallback-ready');
+      stage?.classList.remove('webgl-ready');
+      resetDiceBox();
+      return false;
+    }
+  })();
 
   try {
-    const { default: DiceBox } = await import(`${DICE_BASE}dice-box.es.min.js`);
-    diceBox = new DiceBox({
-      container: '#dice-box',
-      assetPath: 'assets/',
-      origin: DICE_BASE,
-      themeColor: '#ffffff',
-      scale: 9,
-      enableShadows: true,
-    });
-    await diceBox.init();
-    diceBoxReady = true;
-    stage.classList.add('webgl-ready');
-    stage.classList.remove('fallback-ready');
-    return true;
-  } catch (error) {
-    console.error('Dados 3D no disponibles:', error);
-    stage.classList.add('fallback-ready');
-    stage.classList.remove('webgl-ready');
-    return false;
+    return await diceBoxInitPromise;
+  } finally {
+    diceBoxInitPromise = null;
   }
 }
 
 async function animateDice() {
   const result = $('#dice-result');
   const stage = $('#dice-stage');
+  const overlay = $('#dice-overlay');
 
   sounds.unlockAudio();
   sounds.playDiceRoll();
 
-  if (await initDiceBox()) {
-    try {
-      if (result) result.textContent = 'Tirando...';
-      const rolls = await diceBox.roll('2d6');
-      const values = (Array.isArray(rolls) ? rolls : [])
-        .map((die) => Number(die.value))
-        .filter((n) => n >= 1 && n <= 6);
-      if (values.length >= 2) {
-        const [d1, d2] = values;
-        if (result) result.textContent = `${d1} + ${d2} = ${d1 + d2}`;
-        sounds.playDiceLand();
-        return [d1, d2];
-      }
-    } catch (error) {
-      console.error('Error al tirar dados 3D:', error);
-    }
-  }
+  closeBoardCard();
+  await waitForLayout();
+  overlay?.classList.add('dice-overlay--rolling');
 
-  // Respaldo CSS solo si WebGL falla
-  stage?.classList.add('fallback-ready');
-  stage?.classList.remove('webgl-ready');
-  const d1 = Math.floor(Math.random() * 6) + 1;
-  const d2 = Math.floor(Math.random() * 6) + 1;
-  const el1 = $('#die1');
-  const el2 = $('#die2');
-  if (el1 && el2) {
-    el1.style.transform = getDieTransform(d1, 1);
-    el2.style.transform = getDieTransform(d2, 2);
+  try {
+    if (await initDiceBox()) {
+      try {
+        if (result) result.textContent = 'Tirando...';
+        syncDiceBoxSize();
+        await waitForLayout();
+        diceBox.show?.();
+        const rolls = await diceBox.roll('2d6');
+        const values = (Array.isArray(rolls) ? rolls : [])
+          .map((die) => Number(die.value))
+          .filter((n) => n >= 1 && n <= 6);
+        if (values.length >= 2) {
+          const [d1, d2] = values;
+          if (result) result.textContent = `${d1} + ${d2} = ${d1 + d2}`;
+          sounds.playDiceLand();
+          return [d1, d2];
+        }
+      } catch (error) {
+        console.error('Error al tirar dados 3D:', error);
+      }
+    }
+
+    // Respaldo CSS solo si WebGL falla
+    stage?.classList.add('fallback-ready');
+    stage?.classList.remove('webgl-ready');
+    const d1 = Math.floor(Math.random() * 6) + 1;
+    const d2 = Math.floor(Math.random() * 6) + 1;
+    const el1 = $('#die1');
+    const el2 = $('#die2');
+    if (el1 && el2) {
+      el1.style.transform = getDieTransform(d1, 1);
+      el2.style.transform = getDieTransform(d2, 2);
+    }
+    if (result) result.textContent = `${d1} + ${d2} = ${d1 + d2}`;
+    sounds.playDiceLand();
+    return [d1, d2];
+  } finally {
+    overlay?.classList.remove('dice-overlay--rolling');
   }
-  if (result) result.textContent = `${d1} + ${d2} = ${d1 + d2}`;
-  sounds.playDiceLand();
-  return [d1, d2];
 }
 
 function getDieTransform(value, index = 1) {
@@ -1983,7 +2050,7 @@ function buildOwnerBuildingsHtml(count, edge) {
     return `<div class="owner-buildings owner-buildings--${edge} owner-buildings-hotel" title="${tb().hotel}">${tb().hotelEmoji}</div>`;
   }
   const icons = Array.from({ length: count }, () => (
-    `<span class="owner-building">${tb().houseEmoji}</span>`
+    `<span class="owner-building" aria-hidden="true"></span>`
   )).join('');
   return `<div class="owner-buildings owner-buildings--${edge} owner-buildings-count-${count}" title="${count} ${tb().houses}">${icons}</div>`;
 }
@@ -2035,10 +2102,47 @@ function getCellOwnerEdge(pos) {
   return 'top';
 }
 
+function getDiceResultText() {
+  return state.dice[0]
+    ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}`
+    : 'Listo para tirar';
+}
+
+function createDiceOverlayHtml() {
+  return `
+    <div class="dice-stage" id="dice-stage">
+      <div class="dice-box" id="dice-box"></div>
+      <div class="dice-fallback">
+        ${createDieHtml('die1', state.dice[0])}
+        ${createDieHtml('die2', state.dice[1])}
+      </div>
+    </div>
+  `;
+}
+
+function mountDiceResult(center, savedResult = null) {
+  let result = savedResult || document.getElementById('dice-result');
+  if (result?.parentElement && result.parentElement !== center) {
+    result.remove();
+  }
+  if (!result) {
+    result = document.createElement('div');
+    result.className = 'dice-result';
+    result.id = 'dice-result';
+  }
+  center.appendChild(result);
+  result.textContent = getDiceResultText();
+  return result;
+}
+
 function renderBoard() {
   const board = $('#board');
-  const savedStage = document.getElementById('dice-stage');
-  const keepStage = savedStage?.querySelector('canvas') ? savedStage : null;
+  const savedOverlay = document.getElementById('dice-overlay');
+  const savedResult = document.getElementById('dice-result');
+  const keepOverlay = savedOverlay?.querySelector('canvas') ? savedOverlay : null;
+  if (keepOverlay) {
+    savedOverlay.querySelector('#dice-result')?.remove();
+  }
   board.innerHTML = '';
 
   const positions = getBoardPositions();
@@ -2082,14 +2186,6 @@ function renderBoard() {
         </div>
         <div class="board-center-play">
           <div class="board-action hidden" id="board-action"></div>
-          <div class="dice-stage" id="dice-stage">
-            <div class="dice-box" id="dice-box"></div>
-            <div class="dice-fallback">
-              ${createDieHtml('die1', state.dice[0])}
-              ${createDieHtml('die2', state.dice[1])}
-            </div>
-          </div>
-          <div class="dice-result" id="dice-result">${state.dice[0] ? `${state.dice[0]} + ${state.dice[1]} = ${state.dice[0] + state.dice[1]}` : 'Listo para tirar'}</div>
           <div class="board-actions" id="board-actions"></div>
         </div>
       </div>
@@ -2099,15 +2195,29 @@ function renderBoard() {
       <div class="board-card-actions" id="board-card-actions"></div>
     </div>
   `;
+  if (keepOverlay) {
+    center.appendChild(keepOverlay);
+  } else {
+    const overlay = document.createElement('div');
+    overlay.className = 'dice-overlay';
+    overlay.id = 'dice-overlay';
+    overlay.innerHTML = createDiceOverlayHtml();
+    center.appendChild(overlay);
+  }
+
+  mountDiceResult(center, savedResult);
+
   board.appendChild(center);
 
   renderOwnerMarkerLayer(board, positions);
   renderTokenLayer(board, positions);
 
-  if (keepStage) {
-    $('#dice-stage')?.replaceWith(keepStage);
-    if (diceBoxReady) keepStage.classList.add('webgl-ready');
-    diceBox?.resizeWorld?.();
+  if (keepOverlay) {
+    if (diceBoxReady) $('#dice-stage')?.classList.add('webgl-ready');
+    syncDiceBoxSize();
+  } else if (diceBoxReady && diceBox?.canvas && !diceBox.canvas.isConnected) {
+    resetDiceBox();
+    initDiceBox();
   }
 
   if (activeBoardCard) paintBoardCard();
@@ -2165,9 +2275,13 @@ function renderPlayers() {
     el.innerHTML = `
       <div class="player-header">
         <span class="player-token" style="--token-color:${player.color}"><i class="fa-solid ${player.token.icon}"></i></span>
-        <span class="player-name">${player.name}</span>
-        ${player.isAI ? '<span class="ai-tag">IA</span>' : ''}
-        ${isCurrent ? (player.isAI ? '<span class="turn-badge ai-badge">🤖 TURNO IA</span>' : '<span class="turn-badge">TU TURNO</span>') : ''}
+        <div class="player-header-main">
+          <span class="player-name">${player.name}</span>
+          <div class="player-header-tags">
+            ${player.isAI ? '<span class="ai-tag">IA</span>' : ''}
+            ${isCurrent ? (player.isAI ? '<span class="turn-badge ai-badge">🤖 TURNO IA</span>' : '<span class="turn-badge">TU TURNO</span>') : ''}
+          </div>
+        </div>
         <span class="player-expand-icon" aria-hidden="true"><i class="fa-solid fa-chevron-${isExpanded ? 'up' : 'down'}"></i></span>
       </div>
       ${isExpanded ? '' : `
@@ -2208,7 +2322,11 @@ function renderTurnActions(container) {
   if (player.isAI && !state.winner) {
     const note = document.createElement('div');
     note.className = 'board-ai-turn';
-    note.innerHTML = `<p><strong>🤖 ${player.name}</strong> está jugando…</p>`;
+    note.style.setProperty('--player-color', player.color || '#3b82f6');
+    note.innerHTML = `
+      <span class="board-ai-turn-icon" aria-hidden="true">🤖</span>
+      <span class="board-ai-turn-name">${escapeHtml(player.name)}</span>
+      <span class="board-ai-turn-text">está jugando…</span>`;
     container.appendChild(note);
     return;
   }
@@ -2282,6 +2400,17 @@ function renderTurnActions(container) {
       }, true, player.money < owed);
       addBtn('💀 Declarar quiebra', declareBankruptcyFromDebt, false, false, 'btn-danger');
     }
+  }
+
+  if (state.phase === 'buy' && pendingAction?.type === 'buy') {
+    const cell = BOARD[pendingAction.cellId];
+    addBtn(`Comprar (${formatMoney(cell.price)})`, () => buyProperty(pendingAction.cellId), true);
+    addBtn('Subastar', () => declineProperty());
+    addBtn('Ver ficha', () => showBuyModal(pendingAction.cellId));
+  }
+
+  if (state.phase === 'auction' && state.auction && !state.auction.done) {
+    addBtn('🔨 Continuar subasta', () => advanceAuctionTurn(), true);
   }
 }
 
@@ -2440,7 +2569,33 @@ function clearSavedGame() {
   localStorage.removeItem(SAVE_KEY);
 }
 
-function resumeFromSaveData(data) {
+function restoreInterruptedTurnUI() {
+  if (state.phase === 'buy' && pendingAction?.type === 'buy') {
+    const player = currentPlayer();
+    if (player.isAI) {
+      scheduleAI();
+    } else {
+      showBuyModal(pendingAction.cellId);
+    }
+    return;
+  }
+
+  if (state.phase === 'auction' && state.auction && !state.auction.done) {
+    advanceAuctionTurn();
+    return;
+  }
+
+  if (state.phase === 'raiseFunds' && pendingAction?.type === 'raiseFunds') {
+    const player = state.players[pendingAction.fromId];
+    if (player?.isAI) {
+      scheduleAI();
+    } else if (player?.id === state.currentPlayer) {
+      showRaiseFundsModal(pendingAction.fromId, pendingAction.amount, pendingAction.reason);
+    }
+  }
+}
+
+async function resumeFromSaveData(data) {
   applyTheme(data.state?.themeId || 'default');
   const loaded = unpackSaveData(data);
   state = loaded.state;
@@ -2455,7 +2610,8 @@ function resumeFromSaveData(data) {
   $('#setup-screen').classList.add('hidden');
   $('#game-screen').classList.remove('hidden');
   render();
-  initDiceBox();
+  restoreInterruptedTurnUI();
+  await initDiceBox();
   addLog('Partida restaurada.');
 }
 

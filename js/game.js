@@ -1,8 +1,9 @@
 import {
-  BOARD, COLORS, RENT_TABLES, HOUSE_COST, GO_BONUS, JAIL_POSITION,
+  BOARD, BOARD_LEN, BOARD_GRID, COLORS, RENT_TABLES, HOUSE_COST, GO_BONUS, JAIL_POSITION,
   GO_TO_JAIL_POSITION, PLAYER_COLORS, PLAYER_TOKENS, JAIL_BAIL,
   CITY_CARDS, FORTUNE_CARDS, THEME, applyTheme, shuffleDeck,
 } from './board.js';
+import { getBoardConstants, getBoardPositions } from './themes/shared.js';
 import {
   createTradeOffer, validateTrade, executeTrade, renderPropertyCheckboxes,
 } from './trade.js';
@@ -58,9 +59,14 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function createInitialState(playerConfigs, themeId = 'default', difficultyId = 'normal') {
-  applyTheme(themeId);
+function getSetupBoardSize() {
+  return document.querySelector('input[name="board-size"]:checked')?.value || 'classic';
+}
+
+function createInitialState(playerConfigs, themeId = 'default', difficultyId = 'normal', boardSize = 'classic') {
+  applyTheme(themeId, boardSize);
   const difficulty = getDifficultyPreset(difficultyId);
+  const { housesLeft, hotelsLeft } = getBoardConstants(boardSize);
 
   const properties = BOARD.map((cell) => ({
     owner: null,
@@ -84,6 +90,7 @@ function createInitialState(playerConfigs, themeId = 'default', difficultyId = '
 
   return {
     themeId,
+    boardSize,
     difficultyId: difficulty.id,
     players,
     properties,
@@ -97,8 +104,8 @@ function createInitialState(playerConfigs, themeId = 'default', difficultyId = '
     fortuneDiscard: [],
     log: [t().welcomeLog],
     winner: null,
-    housesLeft: 32,
-    hotelsLeft: 12,
+    housesLeft,
+    hotelsLeft,
     freeParkingPot: 0,
     auction: null,
   };
@@ -876,12 +883,12 @@ function nextTurn() {
 async function movePlayer(playerId, steps, collectGo = true) {
   const player = state.players[playerId];
   const oldPos = player.position;
-  const newPos = (oldPos + steps) % 40;
-  const passedGo = steps > 0 && (oldPos + steps >= 40);
+  const newPos = (oldPos + steps) % BOARD_LEN;
+  const passedGo = steps > 0 && (oldPos + steps >= BOARD_LEN);
 
   for (let step = 1; step <= Math.abs(steps); step++) {
     const direction = steps >= 0 ? 1 : -1;
-    player.position = (oldPos + step * direction + 40) % 40;
+    player.position = (oldPos + step * direction + BOARD_LEN) % BOARD_LEN;
     movingTokenId = playerId;
     updateBoardTokens();
     sounds.playTokenStep();
@@ -905,7 +912,7 @@ async function moveToPosition(playerId, target, collectGo = true) {
   const player = state.players[playerId];
   const oldPos = player.position;
   let steps = target - oldPos;
-  if (steps <= 0) steps += 40;
+  if (steps <= 0) steps += BOARD_LEN;
   const passedGo = target < oldPos || (target === 0 && oldPos !== 0);
 
   await movePlayer(playerId, steps, false);
@@ -927,8 +934,8 @@ async function moveToPosition(playerId, target, collectGo = true) {
 
 async function findNearest(playerId, type) {
   const pos = state.players[playerId].position;
-  for (let i = 1; i <= 40; i++) {
-    const idx = (pos + i) % 40;
+  for (let i = 1; i <= BOARD_LEN; i++) {
+    const idx = (pos + i) % BOARD_LEN;
     if (BOARD[idx].type === type) {
       await moveToPosition(playerId, idx);
       return idx;
@@ -1126,7 +1133,7 @@ async function executeCard(card, playerId) {
       sendToJail(playerId);
       break;
     case 'back': {
-      const newPos = (player.position - card.steps + 40) % 40;
+      const newPos = (player.position - card.steps + BOARD_LEN) % BOARD_LEN;
       await movePlayer(playerId, -card.steps, false);
       landOnCell(playerId, newPos);
       if (state.phase === 'rolling') {
@@ -2211,7 +2218,7 @@ function renderTokenLayer(board, positions) {
 function updateBoardTokens() {
   const board = $('#board');
   if (!board) return;
-  const positions = getBoardPositions();
+  const positions = getBoardPositions(BOARD_GRID);
   document.getElementById('token-layer')?.remove();
   renderTokenLayer(board, positions);
 }
@@ -2317,7 +2324,10 @@ function renderBoard() {
   }
   board.innerHTML = '';
 
-  const positions = getBoardPositions();
+  const grid = BOARD_GRID;
+  board.classList.toggle('board--compact', grid !== 11);
+  board.style.setProperty('--board-grid', grid);
+  const positions = getBoardPositions(grid);
 
   BOARD.forEach((cell, i) => {
     const pos = positions[i];
@@ -2347,8 +2357,8 @@ function renderBoard() {
 
   const center = document.createElement('div');
   center.className = 'board-center';
-  center.style.gridRow = '2 / 11';
-  center.style.gridColumn = '2 / 11';
+  center.style.gridRow = `2 / ${grid}`;
+  center.style.gridColumn = `2 / ${grid}`;
   center.innerHTML = `
     <div class="board-center-default" id="board-center-default">
       <div class="board-center-inner">
@@ -2395,19 +2405,6 @@ function renderBoard() {
   if (activeBoardCard) paintBoardCard();
 
   paintBoardAction();
-}
-
-function getBoardPositions() {
-  const pos = [];
-  // Esquina inferior derecha (SALIDA) → fila inferior izquierda (Comisaría)
-  for (let i = 0; i <= 10; i++) pos.push({ row: 11, col: 11 - i });
-  // Columna izquierda ascendente (sin esquinas)
-  for (let i = 11; i <= 19; i++) pos.push({ row: 21 - i, col: 1 });
-  // Esquina superior izquierda (Zona Libre) → superior derecha (¡A la Comisaría!)
-  for (let i = 20; i <= 30; i++) pos.push({ row: 1, col: i - 19 });
-  // Columna derecha descendente (sin esquinas) — termina en fila 10, no en SALIDA
-  for (let i = 31; i <= 39; i++) pos.push({ row: i - 29, col: 11 });
-  return pos;
 }
 
 function showCellInfo(cellId) {
@@ -2736,6 +2733,7 @@ function unpackSaveData(data) {
 
   const loadedState = data.state;
   loadedState.difficultyId = loadedState.difficultyId || 'normal';
+  loadedState.boardSize = loadedState.boardSize || 'classic';
   if (loadedState.auction?.passed) {
     loadedState.auction.passed = new Set(loadedState.auction.passed);
   }
@@ -2805,7 +2803,7 @@ function restoreInterruptedTurnUI() {
 }
 
 async function resumeFromSaveData(data) {
-  applyTheme(data.state?.themeId || 'default');
+  applyTheme(data.state?.themeId || 'default', data.state?.boardSize || 'classic');
   const loaded = unpackSaveData(data);
   state = loaded.state;
   pendingAction = loaded.pendingAction;
@@ -2933,11 +2931,12 @@ function formatSaveSummary(data) {
   const players = data.state.players.filter((p) => !p.bankrupt);
   const turn = data.state.players[data.state.currentPlayer]?.name ?? '?';
   const themeName = getTheme(data.state.themeId || 'default').name;
+  const boardLabel = (data.state.boardSize || 'classic') === 'compact' ? 'Compacto' : 'Clásico';
   const diffName = getDifficultyPreset(data.state.difficultyId || 'normal').name;
   const when = new Date(data.savedAt).toLocaleString('es-ES', {
     day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
   });
-  return `${themeName} · ${diffName} · ${players.length} jugadores · turno de ${turn} · guardado ${when}`;
+  return `${themeName} · ${boardLabel} · ${diffName} · ${players.length} jugadores · turno de ${turn} · guardado ${when}`;
 }
 
 function updateResumeSection() {
@@ -3052,7 +3051,8 @@ function startGame() {
   logPanelCollapsed = true;
   $('#log-panel')?.classList.add('side-panel--log-collapsed');
   $('#log-panel-toggle')?.setAttribute('aria-expanded', 'false');
-  state = createInitialState(playerConfigs, themeId, difficultyId);
+  const boardSize = getSetupBoardSize();
+  state = createInitialState(playerConfigs, themeId, difficultyId, boardSize);
   $('#setup-screen').classList.add('hidden');
   $('#game-screen').classList.remove('hidden');
   render();
@@ -3108,10 +3108,20 @@ function renderThemePicker() {
   container.querySelectorAll('input[name="game-theme"]').forEach((input) => {
     input.addEventListener('change', () => {
       if (input.checked) {
-        applyTheme(input.value);
+        applyTheme(input.value, getSetupBoardSize());
         setupTokenIds = [];
         refreshSetupPlayers?.();
       }
+    });
+  });
+}
+
+function initBoardSizePicker() {
+  document.querySelectorAll('input[name="board-size"]').forEach((input) => {
+    input.addEventListener('change', () => {
+      if (!input.checked) return;
+      const themeId = document.querySelector('input[name="game-theme"]:checked')?.value || 'default';
+      applyTheme(themeId, input.value);
     });
   });
 }
@@ -3180,6 +3190,7 @@ function initSetup() {
   refreshSetupPlayers = updateNameInputs;
   renderThemePicker();
   renderDifficultyPicker();
+  initBoardSizePicker();
   updateNameInputs();
   updateResumeSection();
 

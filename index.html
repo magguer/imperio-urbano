@@ -123,15 +123,36 @@
       </main>
 
       <aside class="sidebar right">
-        <div class="sidebar-head">
-          <h2>Propiedades</h2>
-          <button type="button" id="settings-btn" class="icon-btn" title="Ajustes" aria-label="Abrir ajustes">
-            <i class="fa-solid fa-gear"></i>
+        <section class="side-panel side-panel--properties" aria-label="Propiedades">
+          <div class="side-panel-head">
+            <h2>Propiedades</h2>
+          </div>
+          <div id="actions-panel" class="side-panel-body"></div>
+        </section>
+
+        <section class="side-panel side-panel--log side-panel--log-collapsed" id="log-panel" aria-label="Historial">
+          <button type="button" class="side-panel-head side-panel-toggle" id="log-panel-toggle" aria-expanded="false" aria-controls="log-panel-body">
+            <h2>Historial</h2>
+            <span class="side-panel-toggle-meta">
+              <span class="log-entry-count" id="log-entry-count" aria-hidden="true"></span>
+              <i class="fa-solid fa-chevron-down side-panel-chevron" aria-hidden="true"></i>
+            </span>
           </button>
-        </div>
-        <div id="actions-panel"></div>
-        <h2>Historial</h2>
-        <div id="game-log" class="game-log"></div>
+          <div class="side-panel-collapse" id="log-panel-body">
+            <div class="side-panel-collapse-inner">
+              <div id="game-log" class="game-log"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="side-panel side-panel--bank" aria-label="Suministro del banco">
+          <div id="bank-info-panel" class="bank-info-panel-body" aria-live="polite"></div>
+        </section>
+
+        <button type="button" id="settings-btn" class="sidebar-settings-btn" title="Configuración" aria-label="Abrir configuración">
+          <i class="fa-solid fa-gear" aria-hidden="true"></i>
+          <span>Configuración</span>
+        </button>
       </aside>
     </div>
   </div>

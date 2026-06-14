@@ -46,6 +46,8 @@ let diceBoxReady = false;
 let diceBoxInitPromise = null;
 let activeBoardCard = null;
 let expandedPlayerId = null;
+let collapsedPropGroups = new Set();
+let logPanelCollapsed = true;
 let aiTurnScheduled = false;
 let aiTurnRunning = false;
 
@@ -227,7 +229,7 @@ function wrapBoardConnectors(text) {
   return result;
 }
 
-function colorizeBoardMessage(text) {
+function colorizeLogText(text) {
   let work = escapeHtml(text);
   const tokens = [];
 
@@ -265,7 +267,11 @@ function colorizeBoardMessage(text) {
     work = work.split(id).join(html);
   }
 
-  return `<div class="board-message">${work}</div>`;
+  return work;
+}
+
+function colorizeBoardMessage(text) {
+  return `<div class="board-message">${colorizeLogText(text)}</div>`;
 }
 
 function buildTransferDescription(action) {
@@ -635,6 +641,169 @@ function buildPlayerPropertyListHtml(props) {
   html += renderSection(t().railroadLabel, railroads);
   html += renderSection(t().utilityLabel, utilities);
   return html;
+}
+
+function groupPlayerProperties(props) {
+  const sorted = [...props].sort((a, b) => a.id - b.id);
+  const groups = [];
+  const railroads = [];
+  const utilities = [];
+  const byGroup = new Map();
+
+  sorted.forEach((item) => {
+    if (item.cell.type === 'railroad') {
+      railroads.push(item);
+      return;
+    }
+    if (item.cell.type === 'utility') {
+      utilities.push(item);
+      return;
+    }
+    const key = item.cell.color || 'other';
+    if (!byGroup.has(key)) {
+      byGroup.set(key, {
+        title: COLORS[key]?.name || key,
+        color: COLORS[key]?.bg || '#666',
+        items: [],
+      });
+    }
+    byGroup.get(key).items.push(item);
+  });
+
+  byGroup.forEach((group) => groups.push(group));
+  if (railroads.length) {
+    groups.push({ title: t().railroadLabel, color: COLORS.railroad?.bg || '#666', items: railroads });
+  }
+  if (utilities.length) {
+    groups.push({ title: t().utilityLabel, color: COLORS.utility?.bg || '#666', items: utilities });
+  }
+  return groups;
+}
+
+function createPropertyActionCard(id, cell, houses, mortgaged, player) {
+  const color = COLORS[cell.color]?.bg || '#666';
+  const card = document.createElement('article');
+  card.className = 'prop-card';
+  card.style.setProperty('--prop-color', color);
+
+  const badges = [];
+  if (houses > 0) {
+    badges.push(`<span class="prop-badge prop-badge-build">${formatBuildingBadge(houses)}</span>`);
+  }
+  if (mortgaged) {
+    badges.push('<span class="prop-badge prop-badge-hip">HIP</span>');
+  }
+
+  card.innerHTML = `
+    <div class="prop-card-head">
+      <span class="prop-card-color" aria-hidden="true"></span>
+      <div class="prop-card-info">
+        <span class="prop-card-name">${cell.name}</span>
+        ${badges.length ? `<div class="prop-card-badges">${badges.join('')}</div>` : ''}
+      </div>
+    </div>
+    <div class="prop-card-actions"></div>
+  `;
+
+  const actions = card.querySelector('.prop-card-actions');
+  const canBuild = cell.type === 'property' && ownsFullGroup(player.id, cell.group) && !mortgaged && houses < 5;
+  const canSell = houses > 0;
+  const canMortgage = houses === 0;
+
+  if (canBuild) {
+    const groupCells = getGroupCells(cell.group);
+    const minHousesInGroup = Math.min(...groupCells.map((gid) => state.properties[gid].houses));
+    const needHotel = houses === 4;
+    const canBuildEvenly = houses === minHousesInGroup;
+    const hasSupply = needHotel ? state.hotelsLeft > 0 : state.housesLeft > 0;
+    const cost = HOUSE_COST[cell.group];
+
+    if (canBuildEvenly && hasSupply && player.money >= cost) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'prop-btn prop-btn-build';
+      b.textContent = needHotel
+        ? `+ ${tb().buildHotel} (${formatMoney(cost)})`
+        : `+ ${tb().buildHouse} (${formatMoney(cost)})`;
+      b.onclick = () => buildHouse(id);
+      actions.appendChild(b);
+    }
+  }
+
+  if (canSell) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'prop-btn prop-btn-sell';
+    b.textContent = '- Vender';
+    b.onclick = () => sellHouse(id);
+    actions.appendChild(b);
+  }
+
+  if (canMortgage) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `prop-btn ${mortgaged ? 'prop-btn-recover' : 'prop-btn-mortgage'}`;
+    b.textContent = mortgaged ? 'Recuperar' : 'Hipotecar';
+    b.onclick = () => toggleMortgage(id);
+    actions.appendChild(b);
+  }
+
+  if (!actions.children.length) {
+    actions.classList.add('prop-card-actions--empty');
+  }
+
+  return card;
+}
+
+function propGroupKey(title, color) {
+  return `${color}|${title}`;
+}
+
+function renderPlayerPropertyActions(container, player) {
+  const assets = getPlayerAssets(player.id);
+
+  groupPlayerProperties(assets.props).forEach(({ title, color, items }) => {
+    const key = propGroupKey(title, color);
+    const collapsed = collapsedPropGroups.has(key);
+    const group = document.createElement('div');
+    group.className = `prop-group${collapsed ? ' prop-group--collapsed' : ''}`;
+    group.style.setProperty('--prop-group-color', color);
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'prop-group-toggle';
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.innerHTML = `
+      <span class="prop-group-toggle-main">
+        <span class="prop-group-color-dot" aria-hidden="true"></span>
+        <span class="prop-group-title">${title}</span>
+      </span>
+      <span class="prop-group-toggle-meta">
+        <span class="prop-group-count">${items.length}</span>
+        <i class="fa-solid fa-chevron-down prop-group-chevron" aria-hidden="true"></i>
+      </span>`;
+
+    const body = document.createElement('div');
+    body.className = 'prop-group-body';
+    const bodyInner = document.createElement('div');
+    bodyInner.className = 'prop-group-body-inner';
+
+    items.forEach(({ id, cell, houses, mortgaged }) => {
+      bodyInner.appendChild(createPropertyActionCard(id, cell, houses, mortgaged, player));
+    });
+
+    body.appendChild(bodyInner);
+
+    toggle.addEventListener('click', () => {
+      const nowCollapsed = group.classList.toggle('prop-group--collapsed');
+      toggle.setAttribute('aria-expanded', String(!nowCollapsed));
+      if (nowCollapsed) collapsedPropGroups.add(key);
+      else collapsedPropGroups.delete(key);
+    });
+
+    group.append(toggle, body);
+    container.appendChild(group);
+  });
 }
 
 function buildPlayerDetailsHtml(player, assets) {
@@ -1906,12 +2075,14 @@ async function animateDice() {
   const result = $('#dice-result');
   const stage = $('#dice-stage');
   const overlay = $('#dice-overlay');
+  const center = $('.board-center');
 
   sounds.unlockAudio();
   sounds.playDiceRoll();
 
   closeBoardCard();
   await waitForLayout();
+  center?.classList.add('board-center--dice-rolling');
   overlay?.classList.add('dice-overlay--rolling');
 
   try {
@@ -1951,6 +2122,7 @@ async function animateDice() {
     sounds.playDiceLand();
     return [d1, d2];
   } finally {
+    center?.classList.remove('board-center--dice-rolling');
     overlay?.classList.remove('dice-overlay--rolling');
   }
 }
@@ -2273,13 +2445,13 @@ function renderPlayers() {
     const el = document.createElement('div');
     el.className = `player-card player-card-clickable${isCurrent ? ' active' : ''}${isExpanded ? ' expanded' : ''}${player.bankrupt ? ' bankrupt' : ''}`;
     el.innerHTML = `
+      ${isCurrent ? `<span class="turn-badge turn-badge--float${player.isAI ? ' ai-badge' : ''}">${player.isAI ? '🤖 TURNO IA' : 'TU TURNO'}</span>` : ''}
       <div class="player-header">
         <span class="player-token" style="--token-color:${player.color}"><i class="fa-solid ${player.token.icon}"></i></span>
         <div class="player-header-main">
           <span class="player-name">${player.name}</span>
           <div class="player-header-tags">
             ${player.isAI ? '<span class="ai-tag">IA</span>' : ''}
-            ${isCurrent ? (player.isAI ? '<span class="turn-badge ai-badge">🤖 TURNO IA</span>' : '<span class="turn-badge">TU TURNO</span>') : ''}
           </div>
         </div>
         <span class="player-expand-icon" aria-hidden="true"><i class="fa-solid fa-chevron-${isExpanded ? 'up' : 'down'}"></i></span>
@@ -2414,6 +2586,81 @@ function renderTurnActions(container) {
   }
 }
 
+function renderBankInfoPanel() {
+  const panel = $('#bank-info-panel');
+  if (!panel) return;
+
+  panel.innerHTML = `
+    <div class="bank-stat-row">
+      <span class="bank-stat-emoji" aria-hidden="true">${tb().houseEmoji}</span>
+      <span class="bank-stat-label">${escapeHtml(tb().supplyHouses)}</span>
+      <span class="bank-stat-value">${state.housesLeft}</span>
+    </div>
+    <div class="bank-stat-row">
+      <span class="bank-stat-emoji" aria-hidden="true">${tb().hotelEmoji}</span>
+      <span class="bank-stat-label">${escapeHtml(tb().supplyHotels)}</span>
+      <span class="bank-stat-value">${state.hotelsLeft}</span>
+    </div>
+    <div class="bank-stat-row bank-stat-row--parking">
+      <span class="bank-stat-emoji" aria-hidden="true">${t().parkingEmoji}</span>
+      <span class="bank-stat-label">${escapeHtml(t().parkingName)}</span>
+      <span class="bank-stat-value bank-stat-value--money">${formatMoney(state.freeParkingPot)}</span>
+    </div>`;
+}
+
+function createPropertiesPanelMessage(title, detail, variant = 'idle') {
+  const message = document.createElement('div');
+  message.className = `properties-panel-message properties-panel-message--${variant}`;
+  message.innerHTML = `
+    <p class="properties-panel-message-title">${escapeHtml(title)}</p>
+    ${detail ? `<p class="properties-panel-message-detail">${escapeHtml(detail)}</p>` : ''}`;
+  return message;
+}
+
+function renderPropertiesPanelIdleMessage(container, player) {
+  if (player.isAI) {
+    container.appendChild(createPropertiesPanelMessage(
+      `${player.name} está jugando`,
+      'Las acciones de propiedades aparecen cuando es tu turno.',
+      'ai',
+    ));
+    return;
+  }
+
+  const assets = getPlayerAssets(player.id);
+  const canManageProps = state.phase === 'end' || state.phase === 'build' || state.phase === 'raiseFunds';
+
+  if (canManageProps && !assets.props.length) {
+    if (state.phase === 'raiseFunds') {
+      container.appendChild(createPropertiesPanelMessage(
+        'Sin propiedades para vender',
+        'No tienes bienes que hipotecar. Declara quiebra si no puedes pagar.',
+        'empty',
+      ));
+    } else {
+      container.appendChild(createPropertiesPanelMessage(
+        'Sin propiedades todavía',
+        'Compra casillas cuando pares en ellas y estén libres.',
+        'empty',
+      ));
+    }
+    return;
+  }
+
+  const phaseHints = {
+    roll: ['Esperando tu tirada', 'Tira los dados en el tablero para avanzar.'],
+    rolling: ['Moviendo ficha', 'Espera a que termine el movimiento.'],
+    buy: ['Decisión de compra', 'Elige en el tablero si compras o subastas la propiedad.'],
+    auction: ['Subasta en curso', 'Sigue la subasta desde el tablero.'],
+    raiseFunds: ['Reuniendo fondos', 'Vende casas o hipoteca propiedades para pagar tu deuda.'],
+  };
+
+  const hint = phaseHints[state.phase];
+  if (hint) {
+    container.appendChild(createPropertiesPanelMessage(hint[0], hint[1], 'phase'));
+  }
+}
+
 function renderActions() {
   const container = $('#actions-panel');
   const boardActions = $('#board-actions');
@@ -2421,80 +2668,42 @@ function renderActions() {
   container.innerHTML = '';
   if (boardActions) boardActions.innerHTML = '';
 
+  renderBankInfoPanel();
+
   if (state.winner || player.bankrupt) return;
 
   if (player.isAI) {
     if (boardActions) renderTurnActions(boardActions);
+    renderPropertiesPanelIdleMessage(container, player);
     return;
   }
 
   if (boardActions) renderTurnActions(boardActions);
 
-  if (state.phase === 'end' || state.phase === 'build' || state.phase === 'raiseFunds') {
-    const section = document.createElement('div');
-    section.className = 'build-section';
-    section.innerHTML = '<h4>Tus propiedades</h4>';
-    container.appendChild(section);
+  const canManageProps = state.phase === 'end' || state.phase === 'build' || state.phase === 'raiseFunds';
+  const assets = getPlayerAssets(player.id);
 
-    const assets = getPlayerAssets(player.id);
-    assets.props.forEach(({ id, cell, houses, mortgaged }) => {
-      const row = document.createElement('div');
-      row.className = 'prop-row';
-      const canBuild = cell.type === 'property' && ownsFullGroup(player.id, cell.group) && !mortgaged && houses < 5;
-      const canSell = houses > 0;
-      const canMortgage = houses === 0;
-
-      row.innerHTML = `
-        <span class="prop-name" style="border-left: 4px solid ${COLORS[cell.color]?.bg || '#666'}">${cell.name}${houses ? ` (${formatBuildingBadge(houses)})` : ''}${mortgaged ? ' [HIP]' : ''}</span>
-      `;
-
-      if (canBuild) {
-        const groupCells = getGroupCells(cell.group);
-        const minHousesInGroup = Math.min(...groupCells.map((gid) => state.properties[gid].houses));
-        const needHotel = houses === 4;
-        const canBuildEvenly = houses === minHousesInGroup;
-        const hasSupply = needHotel ? state.hotelsLeft > 0 : state.housesLeft > 0;
-        const cost = HOUSE_COST[cell.group];
-
-        if (canBuildEvenly && hasSupply && player.money >= cost) {
-          const b = document.createElement('button');
-          b.className = 'btn-sm';
-          b.textContent = needHotel
-            ? `+ ${tb().buildHotel} (${formatMoney(cost)})`
-            : `+ ${tb().buildHouse} (${formatMoney(cost)})`;
-          b.onclick = () => buildHouse(id);
-          row.appendChild(b);
-        }
-      }
-      if (canSell) {
-        const b = document.createElement('button');
-        b.className = 'btn-sm';
-        b.textContent = '- Vender';
-        b.onclick = () => sellHouse(id);
-        row.appendChild(b);
-      }
-      if (canMortgage) {
-        const b = document.createElement('button');
-        b.className = 'btn-sm';
-        b.textContent = mortgaged ? 'Recuperar' : 'Hipotecar';
-        b.onclick = () => toggleMortgage(id);
-        row.appendChild(b);
-      }
-
-      section.appendChild(row);
-    });
+  if (canManageProps && assets.props.length) {
+    renderPlayerPropertyActions(container, player);
+  } else {
+    renderPropertiesPanelIdleMessage(container, player);
   }
-
-  // Info de banco
-  const info = document.createElement('div');
-  info.className = 'bank-info';
-  info.innerHTML = `<small>${tb().houseEmoji} ${tb().supplyHouses}: ${state.housesLeft} | ${tb().hotelEmoji} ${tb().supplyHotels}: ${state.hotelsLeft}<br>${t().parkingEmoji} ${t().parkingName}: ${formatMoney(state.freeParkingPot)}</small>`;
-  container.appendChild(info);
 }
 
 function renderLog() {
   const log = $('#game-log');
-  log.innerHTML = state.log.map((m) => `<div class="log-entry">${m}</div>`).join('');
+  if (!log) return;
+
+  log.innerHTML = state.log.map((m, i) => (
+    `<div class="log-entry${i === 0 ? ' log-entry--latest' : ''}">${colorizeLogText(m)}</div>`
+  )).join('');
+
+  const countEl = $('#log-entry-count');
+  if (countEl) {
+    const count = state.log.length;
+    countEl.textContent = count > 0 ? String(count) : '';
+    countEl.hidden = count === 0;
+  }
 }
 
 function render() {
@@ -2683,7 +2892,20 @@ function returnToMainMenu() {
   );
 }
 
+function initLogPanel() {
+  const panel = $('#log-panel');
+  const toggle = $('#log-panel-toggle');
+  if (!panel || !toggle) return;
+
+  toggle.addEventListener('click', () => {
+    logPanelCollapsed = !logPanelCollapsed;
+    panel.classList.toggle('side-panel--log-collapsed', logPanelCollapsed);
+    toggle.setAttribute('aria-expanded', String(!logPanelCollapsed));
+  });
+}
+
 function initGameSettings() {
+  initLogPanel();
   $('#settings-btn')?.addEventListener('click', openSettings);
   $('#settings-close')?.addEventListener('click', closeSettings);
   $('#settings-backdrop')?.addEventListener('click', closeSettings);
@@ -2826,6 +3048,10 @@ function startGame() {
     });
   }
 
+  collapsedPropGroups.clear();
+  logPanelCollapsed = true;
+  $('#log-panel')?.classList.add('side-panel--log-collapsed');
+  $('#log-panel-toggle')?.setAttribute('aria-expanded', 'false');
   state = createInitialState(playerConfigs, themeId, difficultyId);
   $('#setup-screen').classList.add('hidden');
   $('#game-screen').classList.remove('hidden');

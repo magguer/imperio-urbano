@@ -8,7 +8,7 @@
     "start": "node server.js",
     "serve": "node server.js",
     "vercel-build": "echo 'Static site — no build step'",
-    "check": "node --check server.js && node --check js/game.js && node --check js/board.js && node --check js/cards.js && node --check js/trade.js && node --check js/auction.js && node --check js/sounds.js && node --check js/themes/shared.js && node --check js/themes/default.js && node --check js/themes/world.js && node --check js/themes/lotr.js && node --check js/themes/latam.js && node --check js/themes/party.js && node --check js/themes/starwars.js && node --check js/themes/index.js"
+    "check": "node --check server.js && node --check js/game.js && node --check js/board.js && node --check js/cards.js && node --check js/trade.js && node --check js/auction.js && node --check js/sounds.js && node --check js/themes/shared.js && node --check js/themes/default.js && node --check js/themes/world.js && node --check js/themes/lotr.js && node --check js/themes/party.js && node --check js/themes/starwars.js && node --check js/themes/siliconvalley.js && node --check js/themes/naruto.js && node --check js/themes/football.js && node --check js/themes/index.js"
   },
   "keywords": [
     "javascript",

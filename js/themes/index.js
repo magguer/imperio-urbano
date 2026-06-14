@@ -1,11 +1,22 @@
 import defaultTheme from './default.js';
 import worldTheme from './world.js';
 import lotrTheme from './lotr.js';
-import latamTheme from './latam.js';
 import partyTheme from './party.js';
 import starwarsTheme from './starwars.js';
+import siliconvalleyTheme from './siliconvalley.js';
+import narutoTheme from './naruto.js';
+import footballTheme from './football.js';
 
-export const THEMES = [defaultTheme, worldTheme, lotrTheme, latamTheme, partyTheme, starwarsTheme];
+export const THEMES = [
+  defaultTheme,
+  worldTheme,
+  lotrTheme,
+  partyTheme,
+  starwarsTheme,
+  siliconvalleyTheme,
+  narutoTheme,
+  footballTheme,
+];
 
 export function getTheme(id) {
   return THEMES.find((t) => t.id === id) || defaultTheme;

@@ -356,6 +356,65 @@ export function pickPropertyToMortgage(state, playerId, board) {
   return target;
 }
 
+function unmortgageCost(cell) {
+  return Math.floor(cell.price / 2 * 1.1);
+}
+
+export function pickPropertyToUnmortgage(state, playerId, board) {
+  const player = state.players[playerId];
+  const skill = getAISkill(state.difficultyId);
+  const reserve = getCashReserve(skill, player, state, playerId);
+  let target = null;
+  let bestScore = -Infinity;
+
+  board.forEach((cell, id) => {
+    const prop = state.properties[id];
+    if (prop.owner !== playerId || !prop.mortgaged || prop.houses > 0) return;
+    if (!['property', 'railroad', 'utility'].includes(cell.type)) return;
+
+    const cost = unmortgageCost(cell);
+    if (player.money < cost + reserve) return;
+
+    let score = cell.price * 0.15;
+
+    if (cell.type === 'property' && cell.group) {
+      const groupCells = getGroupCells(board, cell.group);
+      const allOwned = groupCells.every((gid) => state.properties[gid].owner === playerId);
+      const othersUnmortgaged = groupCells
+        .filter((gid) => gid !== id)
+        .every((gid) => !state.properties[gid].mortgaged);
+
+      if (allOwned && othersUnmortgaged) score += 220;
+      const owned = countOwnedInGroup(state, board, playerId, cell.group);
+      if (owned === groupCells.length) score += 80;
+      else if (owned >= 2) score += 35;
+    }
+
+    if (cell.type === 'railroad') {
+      const railroads = board.filter((c, gid) =>
+        c.type === 'railroad' && state.properties[gid].owner === playerId
+      ).length;
+      if (railroads >= 2) score += 50;
+      else score += 25;
+    }
+
+    if (cell.type === 'utility') {
+      const utilities = board.filter((c, gid) =>
+        c.type === 'utility' && state.properties[gid].owner === playerId
+      ).length;
+      if (utilities >= 2) score += 45;
+      else score += 20;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      target = id;
+    }
+  });
+
+  return target;
+}
+
 function estimateTradeSideValue(state, playerId, propIds, money, jailCards, board, rentTables) {
   const skill = getAISkill(state.difficultyId);
   let value = money + jailCards * 45;

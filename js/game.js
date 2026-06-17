@@ -16,7 +16,7 @@ import { DEFAULT_BUILDINGS } from './themes/shared.js';
 import { getDifficultyPreset, DIFFICULTY_LIST, formatDifficultySummary } from './difficulty.js';
 import {
   shouldBuyProperty, decideAuctionBid, decideJailAction, pickBuildTarget,
-  pickHouseToSell, pickPropertyToMortgage, shouldAcceptTrade, proposeAITrade, defaultAIName,
+  pickHouseToSell, pickPropertyToMortgage, pickPropertyToUnmortgage, shouldAcceptTrade, proposeAITrade, defaultAIName,
 } from './ai.js';
 import * as sounds from './sounds.js';
 
@@ -1818,6 +1818,15 @@ function aiUseJailCard(player) {
   state.phase = 'roll';
 }
 
+function aiUnmortgageProperties(playerId) {
+  let safety = 0;
+  while (safety++ < 10) {
+    const target = pickPropertyToUnmortgage(state, playerId, BOARD);
+    if (target == null) break;
+    toggleMortgage(target);
+  }
+}
+
 function aiBuildHouses(playerId) {
   let safety = 0;
   while (safety++ < 12) {
@@ -1902,6 +1911,7 @@ async function runAITurn() {
 
     if ((state.phase === 'end' || state.phase === 'build') && player.isAI) {
       closeBoardCard();
+      aiUnmortgageProperties(player.id);
       aiBuildHouses(player.id);
       if (state.doublesCount > 0 && !player.inJail) {
         state.phase = 'roll';
@@ -2278,14 +2288,11 @@ async function initDiceBox() {
 
       diceBoxReady = true;
       stage.classList.add('webgl-ready');
-      stage.classList.remove('fallback-ready');
       diceBox.show?.();
       syncDiceBoxSize();
       return true;
     } catch (error) {
       console.error('Dados 3D no disponibles:', error);
-      stage?.classList.add('fallback-ready');
-      stage?.classList.remove('webgl-ready');
       resetDiceBox();
       return false;
     }
@@ -2305,7 +2312,7 @@ async function animateDice() {
   const center = $('.board-center');
 
   if (diceAnimating) {
-    return getFallbackDiceRoll(result, stage);
+    return rollDiceSilent(result);
   }
 
   diceAnimating = true;
@@ -2336,12 +2343,13 @@ async function animateDice() {
           return [d1, d2];
         }
       } catch (error) {
-        console.warn('Dados 3D no respondieron; usando respaldo:', error);
+        console.warn('Dados 3D no respondieron; usando tirada silenciosa:', error);
         diceBox.clear?.();
+        diceBox.hide?.();
       }
     }
 
-    return getFallbackDiceRoll(result, stage);
+    return rollDiceSilent(result);
   } finally {
     diceAnimating = false;
     center?.classList.remove('board-center--dice-rolling');
@@ -2349,46 +2357,17 @@ async function animateDice() {
   }
 }
 
-function getFallbackDiceRoll(result, stage) {
-  stage?.classList.add('fallback-ready');
+async function rollDiceSilent(result) {
+  const stage = $('#dice-stage');
   stage?.classList.remove('webgl-ready');
+  diceBox?.hide?.();
+  if (result) result.textContent = 'Tirando...';
+  await sleep(720);
   const d1 = Math.floor(Math.random() * 6) + 1;
   const d2 = Math.floor(Math.random() * 6) + 1;
-  const el1 = $('#die1');
-  const el2 = $('#die2');
-  if (el1 && el2) {
-    el1.style.transform = getDieTransform(d1, 1);
-    el2.style.transform = getDieTransform(d2, 2);
-  }
   if (result) result.textContent = `${d1} + ${d2} = ${d1 + d2}`;
   sounds.playDiceLand();
   return [d1, d2];
-}
-
-function getDieTransform(value, index = 1) {
-  const settle = index === 1 ? 'rotateZ(2deg)' : 'rotateZ(-4deg)';
-  const transforms = {
-    1: `rotateX(-18deg) rotateY(28deg) ${settle}`,
-    2: `rotateX(-12deg) rotateY(208deg) ${settle}`,
-    3: `rotateX(-14deg) rotateY(-62deg) ${settle}`,
-    4: `rotateX(-14deg) rotateY(118deg) ${settle}`,
-    5: `rotateX(-108deg) rotateY(18deg) ${settle}`,
-    6: `rotateX(72deg) rotateY(22deg) ${settle}`,
-  };
-  return transforms[value] || transforms[1];
-}
-
-function createDieHtml(id, value) {
-  return `
-    <div class="die" id="${id}" style="transform:${getDieTransform(value || 1, id === 'die1' ? 1 : 2)}" aria-label="Dado ${value || '?'}">
-      <div class="die-face face-1"></div>
-      <div class="die-face face-2"></div>
-      <div class="die-face face-3"><span class="pip"></span></div>
-      <div class="die-face face-4"></div>
-      <div class="die-face face-5"><span class="pip"></span></div>
-      <div class="die-face face-6"></div>
-    </div>
-  `;
 }
 
 function isOwnableCell(cell) {
@@ -2523,10 +2502,6 @@ function createDiceOverlayHtml() {
   return `
     <div class="dice-stage" id="dice-stage">
       <div class="dice-box" id="dice-box"></div>
-      <div class="dice-fallback">
-        ${createDieHtml('die1', state.dice[0])}
-        ${createDieHtml('die2', state.dice[1])}
-      </div>
     </div>
   `;
 }

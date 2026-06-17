@@ -2271,44 +2271,11 @@ body {
 }
 
 .dice-fallback {
-  display: none;
-  position: absolute;
-  inset: 0;
-  align-items: center;
-  justify-content: center;
-  gap: 1.15rem;
-  perspective: 680px;
-  z-index: 1;
-}
-
-.dice-overlay--rolling .dice-fallback .die {
-  animation: die-scatter 0.85s cubic-bezier(0.2, 0.8, 0.22, 1) infinite alternate;
-}
-
-.dice-overlay--rolling .dice-fallback .die:nth-child(1) {
-  animation-name: die-scatter-a;
-}
-
-.dice-overlay--rolling .dice-fallback .die:nth-child(2) {
-  animation-name: die-scatter-b;
-}
-
-@keyframes die-scatter-a {
-  0% { transform: translate(-38%, -28%) rotateX(-18deg) rotateY(28deg); }
-  100% { transform: translate(32%, 24%) rotateX(72deg) rotateY(-140deg); }
-}
-
-@keyframes die-scatter-b {
-  0% { transform: translate(36%, -22%) rotateX(-12deg) rotateY(208deg); }
-  100% { transform: translate(-34%, 30%) rotateX(108deg) rotateY(60deg); }
+  display: none !important;
 }
 
 .dice-stage.webgl-ready .dice-box {
   opacity: 1;
-}
-
-.dice-stage.fallback-ready .dice-fallback {
-  display: flex;
 }
 
 .dice-result {

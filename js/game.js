@@ -51,6 +51,17 @@ let collapsedPropGroups = new Set();
 let logPanelCollapsed = true;
 let aiTurnScheduled = false;
 let aiTurnRunning = false;
+let aiTurnStartedAt = 0;
+let aiTurnGeneration = 0;
+let activeRollId = 0;
+let rollingSince = 0;
+let diceAnimating = false;
+let rollWatchdogTimer = null;
+
+const DICE_ROLL_TIMEOUT_MS = 8000;
+const DICE_INIT_TIMEOUT_MS = 10000;
+const MAX_MOVE_MS = 4000;
+const ROLLING_STUCK_MS = DICE_INIT_TIMEOUT_MS + DICE_ROLL_TIMEOUT_MS + MAX_MOVE_MS + 3000;
 
 const SAVE_KEY = 'imperio-urbano-save';
 const SAVE_VERSION = 1;
@@ -58,6 +69,15 @@ const SAVE_VERSION = 1;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms);
+    Promise.resolve(promise)
+      .then((value) => { clearTimeout(timer); resolve(value); })
+      .catch((error) => { clearTimeout(timer); reject(error); });
+  });
+}
 
 function getSetupBoardSize() {
   return document.querySelector('input[name="board-size"]:checked')?.value || 'classic';
@@ -124,8 +144,78 @@ function isAIPlayer(player = currentPlayer()) {
   return !!player?.isAI;
 }
 
+function isActiveRoll(rollId) {
+  return rollId === activeRollId && state?.phase === 'rolling';
+}
+
+function resetDiceFlowState() {
+  activeRollId++;
+  aiTurnGeneration++;
+  rollingSince = 0;
+  diceAnimating = false;
+  aiTurnRunning = false;
+  aiTurnStartedAt = 0;
+  aiTurnScheduled = false;
+  clearRollWatchdog();
+}
+
+function invalidateStuckRoll() {
+  activeRollId++;
+  aiTurnGeneration++;
+  rollingSince = 0;
+  diceAnimating = false;
+  aiTurnRunning = false;
+  aiTurnStartedAt = 0;
+  if (state) state.phase = 'roll';
+  resetDiceBox();
+  $('.board-center')?.classList.remove('board-center--dice-rolling');
+  $('#dice-overlay')?.classList.remove('dice-overlay--rolling');
+  clearRollWatchdog();
+}
+
+function clearRollWatchdog() {
+  if (!rollWatchdogTimer) return;
+  clearTimeout(rollWatchdogTimer);
+  rollWatchdogTimer = null;
+}
+
+function startRollWatchdog(rollId) {
+  clearRollWatchdog();
+  rollWatchdogTimer = setTimeout(() => {
+    rollWatchdogTimer = null;
+    if (!state || state.phase !== 'rolling' || rollId !== activeRollId) return;
+    console.warn('Tirada de dados atascada; recuperando.');
+    invalidateStuckRoll();
+    render();
+  }, ROLLING_STUCK_MS);
+}
+
+function recoverStuckGameState() {
+  const now = Date.now();
+
+  if (state?.phase === 'rolling' && rollingSince && now - rollingSince >= ROLLING_STUCK_MS) {
+    invalidateStuckRoll();
+    return;
+  }
+
+  if (aiTurnRunning && aiTurnStartedAt && now - aiTurnStartedAt >= ROLLING_STUCK_MS) {
+    aiTurnRunning = false;
+    aiTurnStartedAt = 0;
+    diceAnimating = false;
+    if (state?.phase === 'rolling') {
+      invalidateStuckRoll();
+    } else {
+      aiTurnGeneration++;
+    }
+  }
+}
+
 function scheduleAI() {
-  if (aiTurnScheduled || aiTurnRunning || !state || state.winner) return;
+  if (aiTurnScheduled || !state || state.winner) return;
+
+  recoverStuckGameState();
+
+  if (aiTurnRunning) return;
   const player = currentPlayer();
   if (!player?.isAI || player.bankrupt) return;
   if (state.phase === 'rolling' || state.phase === 'auction') return;
@@ -1172,69 +1262,96 @@ async function rollDice() {
   closeModal();
 
   if (player.inJail) {
-    handleJailRoll();
+    await handleJailRoll();
     return;
   }
 
+  const rollId = ++activeRollId;
   state.phase = 'rolling';
+  rollingSince = Date.now();
+  startRollWatchdog(rollId);
   renderActions();
-  const [d1, d2] = await animateDice();
-  state.dice = [d1, d2];
-  const isDouble = d1 === d2;
+  try {
+    const [d1, d2] = await animateDice();
+    if (!isActiveRoll(rollId)) return;
 
-  if (isDouble) {
-    state.doublesCount++;
-    if (state.doublesCount >= 3) {
-      addLog(`¡${player.name} sacó 3 dobles seguidos! A ${t().jailName}.`);
-      sendToJail(player.id);
+    state.dice = [d1, d2];
+    const isDouble = d1 === d2;
+
+    if (isDouble) {
+      state.doublesCount++;
+      if (state.doublesCount >= 3) {
+        addLog(`¡${player.name} sacó 3 dobles seguidos! A ${t().jailName}.`);
+        sendToJail(player.id);
+        state.doublesCount = 0;
+        return;
+      }
+    } else {
       state.doublesCount = 0;
-      return;
     }
-  } else {
-    state.doublesCount = 0;
+
+    const steps = d1 + d2;
+    addLog(`${player.name} tira ${d1} + ${d2} = ${steps}${isDouble ? ' (¡doble!)' : ''}.`);
+    const newPos = await movePlayer(player.id, steps);
+    if (!isActiveRoll(rollId)) return;
+    landOnCell(player.id, newPos);
+
+    render();
+  } finally {
+    if (rollId === activeRollId) {
+      rollingSince = 0;
+      clearRollWatchdog();
+    }
   }
-
-  const steps = d1 + d2;
-  addLog(`${player.name} tira ${d1} + ${d2} = ${steps}${isDouble ? ' (¡doble!)' : ''}.`);
-  const newPos = await movePlayer(player.id, steps);
-  landOnCell(player.id, newPos);
-
-  render();
 }
 
 async function handleJailRoll() {
   const player = currentPlayer();
+  const rollId = ++activeRollId;
   state.phase = 'rolling';
+  rollingSince = Date.now();
+  startRollWatchdog(rollId);
   renderActions();
-  const [d1, d2] = await animateDice();
-  state.dice = [d1, d2];
+  try {
+    const [d1, d2] = await animateDice();
+    if (!isActiveRoll(rollId)) return;
 
-  player.jailTurns++;
-  const isDouble = d1 === d2;
+    state.dice = [d1, d2];
 
-  if (isDouble) {
-    player.inJail = false;
-    player.jailTurns = 0;
-    state.doublesCount = 0;
-    addLog(`${player.name} saca doble (${d1}+${d2}) y sale de ${t().jailName}.`);
-    const newPos = await movePlayer(player.id, d1 + d2);
-    landOnCell(player.id, newPos);
-    if (state.phase === 'rolling') state.phase = 'end';
-  } else if (player.jailTurns >= 3) {
-    player.inJail = false;
-    player.jailTurns = 0;
-    state.doublesCount = 0;
-    addLog(`${player.name} no saca doble (${d1}+${d2}). Debe pagar fianza para salir.`);
-    transferMoney(player.id, null, jailBailAmount(), 'fianza');
-    const newPos = await movePlayer(player.id, d1 + d2);
-    landOnCell(player.id, newPos);
-    if (state.phase === 'rolling') state.phase = 'end';
-  } else {
-    state.doublesCount = 0;
-    addLog(`${player.name} no saca doble (${d1}+${d2}). Turno ${player.jailTurns}/3 en ${t().jailName}.`);
-    state.phase = 'end';
+    player.jailTurns++;
+    const isDouble = d1 === d2;
+
+    if (isDouble) {
+      player.inJail = false;
+      player.jailTurns = 0;
+      state.doublesCount = 0;
+      addLog(`${player.name} saca doble (${d1}+${d2}) y sale de ${t().jailName}.`);
+      const newPos = await movePlayer(player.id, d1 + d2);
+      if (!isActiveRoll(rollId)) return;
+      landOnCell(player.id, newPos);
+      if (state.phase === 'rolling') state.phase = 'end';
+    } else if (player.jailTurns >= 3) {
+      player.inJail = false;
+      player.jailTurns = 0;
+      state.doublesCount = 0;
+      addLog(`${player.name} no saca doble (${d1}+${d2}). Debe pagar fianza para salir.`);
+      transferMoney(player.id, null, jailBailAmount(), 'fianza');
+      const newPos = await movePlayer(player.id, d1 + d2);
+      if (!isActiveRoll(rollId)) return;
+      landOnCell(player.id, newPos);
+      if (state.phase === 'rolling') state.phase = 'end';
+    } else {
+      state.doublesCount = 0;
+      addLog(`${player.name} no saca doble (${d1}+${d2}). Turno ${player.jailTurns}/3 en ${t().jailName}.`);
+      state.phase = 'end';
+    }
+    render();
+  } finally {
+    if (rollId === activeRollId) {
+      rollingSince = 0;
+      clearRollWatchdog();
+    }
   }
-  render();
 }
 
 function showJailOptions() {
@@ -1657,6 +1774,8 @@ async function runAITurn() {
   if (state.phase === 'rolling' || state.phase === 'auction') return;
 
   aiTurnRunning = true;
+  aiTurnStartedAt = Date.now();
+  const turnId = ++aiTurnGeneration;
   try {
     if (state.phase === 'buy' && pendingAction?.type === 'buy') {
       closeBoardCard();
@@ -1703,8 +1822,11 @@ async function runAITurn() {
       endTurn();
     }
   } finally {
-    aiTurnRunning = false;
-    if (isAIPlayer()) scheduleAI();
+    if (turnId === aiTurnGeneration) {
+      aiTurnRunning = false;
+      aiTurnStartedAt = 0;
+      if (isAIPlayer()) scheduleAI();
+    }
   }
 }
 
@@ -2050,7 +2172,7 @@ async function initDiceBox() {
         enableShadows: true,
         offscreen: false,
       });
-      await diceBox.init();
+      await withTimeout(diceBox.init(), DICE_INIT_TIMEOUT_MS);
       if (!container.isConnected) {
         resetDiceBox();
         return false;
@@ -2084,6 +2206,11 @@ async function animateDice() {
   const overlay = $('#dice-overlay');
   const center = $('.board-center');
 
+  if (diceAnimating) {
+    return getFallbackDiceRoll(result, stage);
+  }
+
+  diceAnimating = true;
   sounds.unlockAudio();
   sounds.playDiceRoll();
 
@@ -2099,7 +2226,8 @@ async function animateDice() {
         syncDiceBoxSize();
         await waitForLayout();
         diceBox.show?.();
-        const rolls = await diceBox.roll('2d6');
+        diceBox.clear?.();
+        const rolls = await withTimeout(diceBox.roll('2d6'), DICE_ROLL_TIMEOUT_MS);
         const values = (Array.isArray(rolls) ? rolls : [])
           .map((die) => Number(die.value))
           .filter((n) => n >= 1 && n <= 6);
@@ -2110,28 +2238,33 @@ async function animateDice() {
           return [d1, d2];
         }
       } catch (error) {
-        console.error('Error al tirar dados 3D:', error);
+        console.warn('Dados 3D no respondieron; usando respaldo:', error);
+        diceBox.clear?.();
       }
     }
 
-    // Respaldo CSS solo si WebGL falla
-    stage?.classList.add('fallback-ready');
-    stage?.classList.remove('webgl-ready');
-    const d1 = Math.floor(Math.random() * 6) + 1;
-    const d2 = Math.floor(Math.random() * 6) + 1;
-    const el1 = $('#die1');
-    const el2 = $('#die2');
-    if (el1 && el2) {
-      el1.style.transform = getDieTransform(d1, 1);
-      el2.style.transform = getDieTransform(d2, 2);
-    }
-    if (result) result.textContent = `${d1} + ${d2} = ${d1 + d2}`;
-    sounds.playDiceLand();
-    return [d1, d2];
+    return getFallbackDiceRoll(result, stage);
   } finally {
+    diceAnimating = false;
     center?.classList.remove('board-center--dice-rolling');
     overlay?.classList.remove('dice-overlay--rolling');
   }
+}
+
+function getFallbackDiceRoll(result, stage) {
+  stage?.classList.add('fallback-ready');
+  stage?.classList.remove('webgl-ready');
+  const d1 = Math.floor(Math.random() * 6) + 1;
+  const d2 = Math.floor(Math.random() * 6) + 1;
+  const el1 = $('#die1');
+  const el2 = $('#die2');
+  if (el1 && el2) {
+    el1.style.transform = getDieTransform(d1, 1);
+    el2.style.transform = getDieTransform(d2, 2);
+  }
+  if (result) result.textContent = `${d1} + ${d2} = ${d1 + d2}`;
+  sounds.playDiceLand();
+  return [d1, d2];
 }
 
 function getDieTransform(value, index = 1) {
@@ -2809,6 +2942,7 @@ async function resumeFromSaveData(data) {
   pendingAction = loaded.pendingAction;
   tradeDraft = null;
   activeBoardCard = null;
+  resetDiceFlowState();
   if (state.phase === 'rolling') state.phase = 'end';
   if (state.players[state.currentPlayer]?.inJail) state.doublesCount = 0;
   closeModal();
@@ -3049,6 +3183,7 @@ function startGame() {
 
   collapsedPropGroups.clear();
   logPanelCollapsed = true;
+  resetDiceFlowState();
   $('#log-panel')?.classList.add('side-panel--log-collapsed');
   $('#log-panel-toggle')?.setAttribute('aria-expanded', 'false');
   const boardSize = getSetupBoardSize();

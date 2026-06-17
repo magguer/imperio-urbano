@@ -2407,10 +2407,11 @@ function renderOwnerMarkerLayer(board, positions) {
 }
 
 function getCellOwnerEdge(pos) {
-  if (pos.row === 11) return 'top';
+  const G = BOARD_GRID;
+  if (pos.row === G) return 'top';
   if (pos.col === 1) return 'right';
   if (pos.row === 1) return 'bottom';
-  if (pos.col === 11) return 'left';
+  if (pos.col === G) return 'left';
   return 'top';
 }
 

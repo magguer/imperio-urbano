@@ -8,7 +8,9 @@ const AI_SKILL = {
     buildReserve: 380,
     jailPayTurn: 3,
     noise: 0.38,
-    tradeMinGain: 80,
+    tradeMinGain: 35,
+    tradeProposeChance: 0.22,
+    tradeProposeMinGain: 22,
     portfolioBoost: 8,
     auctionAggression: 0.8,
   },
@@ -19,7 +21,9 @@ const AI_SKILL = {
     buildReserve: 220,
     jailPayTurn: 2,
     noise: 0.16,
-    tradeMinGain: 40,
+    tradeMinGain: 18,
+    tradeProposeChance: 0.42,
+    tradeProposeMinGain: 12,
     portfolioBoost: 14,
     auctionAggression: 0.95,
   },
@@ -30,7 +34,9 @@ const AI_SKILL = {
     buildReserve: 140,
     jailPayTurn: 1,
     noise: 0.06,
-    tradeMinGain: 15,
+    tradeMinGain: 8,
+    tradeProposeChance: 0.62,
+    tradeProposeMinGain: 5,
     portfolioBoost: 20,
     auctionAggression: 1.1,
   },
@@ -42,6 +48,8 @@ const AI_SKILL = {
     jailPayTurn: 0,
     noise: 0,
     tradeMinGain: 0,
+    tradeProposeChance: 0.82,
+    tradeProposeMinGain: 0,
     portfolioBoost: 26,
     auctionAggression: 1.22,
   },
@@ -64,8 +72,8 @@ function countOwnedInGroup(state, board, playerId, group) {
   return getGroupCells(board, group).filter((id) => state.properties[id].owner === playerId).length;
 }
 
-function countUnownedInGroup(state, board, group) {
-  return getGroupCells(board, group).filter((id) => state.properties[id].owner === null).length;
+function countAcquirableInGroup(state, board, playerId, group) {
+  return getGroupCells(board, group).filter((id) => state.properties[id].owner !== playerId).length;
 }
 
 function countPlayerProperties(state, playerId) {
@@ -144,11 +152,19 @@ export function scoreProperty(cellId, state, playerId, board, rentTables, skill 
     const groupCells = getGroupCells(board, cell.group);
     const total = groupCells.length;
     const owned = countOwnedInGroup(state, board, playerId, cell.group);
-    const unowned = countUnownedInGroup(state, board, cell.group);
+    const acquirable = countAcquirableInGroup(state, board, playerId, cell.group);
+    const alreadyOwns = state.properties[cellId].owner === playerId;
 
     score += owned * 22;
-    if (owned > 0 && unowned === 1) score += 38;
-    if (owned === total - 1) score += 45;
+
+    if (!alreadyOwns) {
+      if (owned > 0 && acquirable === 1) score += 38;
+      if (owned === total - 1 && acquirable >= 1) score += 45;
+    } else if (owned === total) {
+      score += 20;
+    } else if (owned > 0 && acquirable >= 1) {
+      score += 10;
+    }
 
     if (opponentNearMonopoly(state, board, playerId, cell.group)) score += 28;
     if (opponentOwnsInGroup(state, board, playerId, cell.group)) score -= 8;
@@ -350,15 +366,160 @@ function estimateTradeSideValue(state, playerId, propIds, money, jailCards, boar
   return value;
 }
 
+export function tradeNetForPlayer(offer, state, playerId, board, rentTables) {
+  const isFrom = playerId === offer.fromId;
+  const getsProps = isFrom ? offer.requestProps : offer.offerProps;
+  const getsMoney = isFrom ? offer.requestMoney : offer.offerMoney;
+  const getsJail = isFrom ? offer.requestJailCards : offer.offerJailCards;
+  const givesProps = isFrom ? offer.offerProps : offer.requestProps;
+  const givesMoney = isFrom ? offer.offerMoney : offer.requestMoney;
+  const givesJail = isFrom ? offer.offerJailCards : offer.requestJailCards;
+
+  const gets = estimateTradeSideValue(state, playerId, getsProps, getsMoney, getsJail, board, rentTables);
+  const gives = estimateTradeSideValue(state, playerId, givesProps, givesMoney, givesJail, board, rentTables);
+  return gets - gives;
+}
+
+function getTradeablePropIds(state, playerId, board) {
+  return board.reduce((ids, cell, id) => {
+    const prop = state.properties[id];
+    if (
+      prop.owner === playerId &&
+      ['property', 'railroad', 'utility'].includes(cell.type) &&
+      prop.houses === 0
+    ) {
+      ids.push(id);
+    }
+    return ids;
+  }, []);
+}
+
+function isProtectedTradeAsset(state, board, playerId, cellId) {
+  const cell = board[cellId];
+  if (!cell?.group) return false;
+
+  const groupCells = getGroupCells(board, cell.group);
+  const owned = groupCells.filter((id) => state.properties[id].owner === playerId).length;
+  return owned >= groupCells.length - 1;
+}
+
+function pickOfferProps(state, fromId, board, rentTables, skill, excludeIds) {
+  return getTradeablePropIds(state, fromId, board)
+    .filter((id) => !excludeIds.includes(id))
+    .filter((id) => !isProtectedTradeAsset(state, board, fromId, id))
+    .sort((a, b) => scoreProperty(a, state, fromId, board, rentTables, skill)
+      - scoreProperty(b, state, fromId, board, rentTables, skill))
+    .slice(0, 2);
+}
+
+function findMonopolyTradeTargets(state, fromId, toId, board, rentTables, skill) {
+  const targets = [];
+  const seenGroups = new Set();
+
+  board.forEach((cell, id) => {
+    if (!cell.group || seenGroups.has(cell.group)) return;
+    seenGroups.add(cell.group);
+
+    const groupCells = getGroupCells(board, cell.group);
+    const fromOwned = groupCells.filter((gid) => state.properties[gid].owner === fromId);
+    const toOwned = groupCells.filter((gid) => state.properties[gid].owner === toId);
+
+    if (fromOwned.length !== groupCells.length - 1 || toOwned.length !== 1) return;
+
+    const requestId = toOwned[0];
+    targets.push({
+      requestProps: [requestId],
+      priority: scoreProperty(requestId, state, fromId, board, rentTables, skill) + cell.price * 0.2,
+    });
+  });
+
+  return targets.sort((a, b) => b.priority - a.priority);
+}
+
+function finalizeTradeOffer(state, fromId, toId, requestProps, offerProps, board, rentTables, skill) {
+  const from = state.players[fromId];
+  const reserve = getCashReserve(skill, from, state, fromId);
+  const maxMoney = Math.max(0, from.money - reserve);
+
+  const offer = {
+    fromId,
+    toId,
+    offerProps: [...offerProps],
+    offerMoney: 0,
+    offerJailCards: 0,
+    requestProps: [...requestProps],
+    requestMoney: 0,
+    requestJailCards: 0,
+  };
+
+  const requestValue = estimateTradeSideValue(state, toId, requestProps, 0, 0, board, rentTables);
+  const offerPropValue = estimateTradeSideValue(state, toId, offerProps, 0, 0, board, rentTables);
+  const startMoney = Math.max(0, Math.floor(requestValue - offerPropValue));
+  const step = Math.max(5, Math.floor(board[requestProps[0]].price * 0.05));
+
+  for (let offerMoney = startMoney; offerMoney <= maxMoney; offerMoney += step) {
+    offer.offerMoney = offerMoney;
+    const fromNet = tradeNetForPlayer(offer, state, fromId, board, rentTables);
+    const toNet = tradeNetForPlayer(offer, state, toId, board, rentTables);
+    if (fromNet >= skill.tradeProposeMinGain && toNet >= skill.tradeMinGain) {
+      return offer;
+    }
+  }
+
+  return null;
+}
+
+function buildTradeWithPartner(state, fromId, toId, board, rentTables, skill) {
+  const targets = findMonopolyTradeTargets(state, fromId, toId, board, rentTables, skill);
+  for (const target of targets) {
+    const propOffers = pickOfferProps(state, fromId, board, rentTables, skill, target.requestProps);
+    const offerVariants = [propOffers, propOffers.slice(0, 1), []];
+    const seen = new Set();
+
+    for (const offerProps of offerVariants) {
+      const key = offerProps.join(',');
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const offer = finalizeTradeOffer(
+        state,
+        fromId,
+        toId,
+        target.requestProps,
+        offerProps,
+        board,
+        rentTables,
+        skill,
+      );
+      if (offer) return offer;
+    }
+  }
+  return null;
+}
+
+export function proposeAITrade(state, fromId, opponentIds, difficultyId, board, rentTables) {
+  const skill = getAISkill(difficultyId);
+  if (!opponentIds.length || Math.random() > skill.tradeProposeChance) return null;
+
+  let bestOffer = null;
+  let bestNet = -Infinity;
+
+  opponentIds.forEach((toId) => {
+    const offer = buildTradeWithPartner(state, fromId, toId, board, rentTables, skill);
+    if (!offer) return;
+    const net = tradeNetForPlayer(offer, state, fromId, board, rentTables);
+    if (net > bestNet) {
+      bestNet = net;
+      bestOffer = offer;
+    }
+  });
+
+  return bestOffer;
+}
+
 export function shouldAcceptTrade(offer, state, difficultyId, board, rentTables) {
   const skill = getAISkill(difficultyId);
-  const to = state.players[offer.toId];
-  const from = state.players[offer.fromId];
-
-  const gives = estimateTradeSideValue(state, to.id, offer.offerProps, offer.offerMoney, offer.offerJailCards, board, rentTables);
-  const receives = estimateTradeSideValue(state, to.id, offer.requestProps, offer.requestMoney, offer.requestJailCards, board, rentTables);
-
-  const net = receives - gives;
+  const net = tradeNetForPlayer(offer, state, offer.toId, board, rentTables);
   return net + randomNoise(skill) >= skill.tradeMinGain;
 }
 

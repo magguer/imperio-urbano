@@ -16,7 +16,7 @@ import { DEFAULT_BUILDINGS } from './themes/shared.js';
 import { getDifficultyPreset, DIFFICULTY_LIST, formatDifficultySummary } from './difficulty.js';
 import {
   shouldBuyProperty, decideAuctionBid, decideJailAction, pickBuildTarget,
-  pickHouseToSell, pickPropertyToMortgage, shouldAcceptTrade, defaultAIName,
+  pickHouseToSell, pickPropertyToMortgage, shouldAcceptTrade, proposeAITrade, defaultAIName,
 } from './ai.js';
 import * as sounds from './sounds.js';
 
@@ -53,6 +53,7 @@ let aiTurnScheduled = false;
 let aiTurnRunning = false;
 let aiTurnStartedAt = 0;
 let aiTurnGeneration = 0;
+let deferAITurnCleanup = false;
 let activeRollId = 0;
 let rollingSince = 0;
 let diceAnimating = false;
@@ -156,6 +157,7 @@ function resetDiceFlowState() {
   aiTurnRunning = false;
   aiTurnStartedAt = 0;
   aiTurnScheduled = false;
+  deferAITurnCleanup = false;
   clearRollWatchdog();
 }
 
@@ -1648,31 +1650,39 @@ function collectTradeDraft() {
   tradeDraft.requestJailCards = $('#request-jail')?.checked ? 1 : 0;
 }
 
+function formatTradeReviewBody(from, to, offer) {
+  const listOffer = [
+    ...offer.offerProps.map((id) => BOARD[id].name),
+    ...(offer.offerMoney ? [formatMoney(offer.offerMoney)] : []),
+    ...(offer.offerJailCards ? ['1 carta salida'] : []),
+  ];
+  const listRequest = [
+    ...offer.requestProps.map((id) => BOARD[id].name),
+    ...(offer.requestMoney ? [formatMoney(offer.requestMoney)] : []),
+    ...(offer.requestJailCards ? ['1 carta salida'] : []),
+  ];
+  const mortgagedWarning = offer.offerProps.some((id) => state.properties[id].mortgaged)
+    || offer.requestProps.some((id) => state.properties[id].mortgaged)
+    ? '<p class="trade-warning">⚠️ Hay propiedades hipotecadas en el trato. El nuevo dueño deberá pagar 10% extra para recuperarlas.</p>'
+    : '';
+
+  return `
+    <div class="trade-review">
+      <p><strong>${from.name} da:</strong> ${listOffer.length ? listOffer.join(', ') : '—'}</p>
+      <p class="trade-arrow">⇅</p>
+      <p><strong>${to.name} da:</strong> ${listRequest.length ? listRequest.join(', ') : '—'}</p>
+    </div>
+    ${mortgagedWarning}`;
+}
+
 function showTradeReview() {
   const from = state.players[tradeDraft.fromId];
   const to = state.players[tradeDraft.toId];
 
-  const listOffer = [
-    ...tradeDraft.offerProps.map((id) => BOARD[id].name),
-    ...(tradeDraft.offerMoney ? [formatMoney(tradeDraft.offerMoney)] : []),
-    ...(tradeDraft.offerJailCards ? ['1 carta salida'] : []),
-  ];
-  const listRequest = [
-    ...tradeDraft.requestProps.map((id) => BOARD[id].name),
-    ...(tradeDraft.requestMoney ? [formatMoney(tradeDraft.requestMoney)] : []),
-    ...(tradeDraft.requestJailCards ? ['1 carta salida'] : []),
-  ];
-
   showModal(
     '🤝 Revisar trato',
     `<p><strong>Pasa el dispositivo a ${to.name}</strong></p>
-     <div class="trade-review">
-       <p><strong>${from.name} da:</strong> ${listOffer.length ? listOffer.join(', ') : '—'}</p>
-       <p class="trade-arrow">⇅</p>
-       <p><strong>${to.name} da:</strong> ${listRequest.length ? listRequest.join(', ') : '—'}</p>
-     </div>
-     ${tradeDraft.offerProps.some((id) => state.properties[id].mortgaged) || tradeDraft.requestProps.some((id) => state.properties[id].mortgaged)
-    ? '<p class="trade-warning">⚠️ Hay propiedades hipotecadas en el trato. El nuevo dueño deberá pagar 10% extra para recuperarlas.</p>' : ''}`,
+     ${formatTradeReviewBody(from, to, tradeDraft)}`,
     [
       {
         label: 'Aceptar trato',
@@ -1709,6 +1719,85 @@ function respondToTradeFromAI() {
   }
   tradeDraft = null;
   render();
+}
+
+function completeDeferredAITurn() {
+  aiTurnRunning = false;
+  aiTurnStartedAt = 0;
+  if (isAIPlayer()) scheduleAI();
+}
+
+function finishAIEndPhase(player) {
+  if (state.doublesCount > 0 && !player.inJail) {
+    state.phase = 'roll';
+    render();
+    return;
+  }
+  endTurn();
+}
+
+function showAITradeProposal(offer, onDone) {
+  const from = state.players[offer.fromId];
+  const to = state.players[offer.toId];
+
+  addLog(`🤝 ${from.name} propone un trato a ${to.name}.`);
+  showModal(
+    `🤝 ${from.name} propone un trato`,
+    `<p><strong>${to.name}</strong>, revisa la oferta:</p>
+     ${formatTradeReviewBody(from, to, offer)}`,
+    [
+      {
+        label: 'Aceptar trato',
+        primary: true,
+        action: () => {
+          closeModal();
+          executeTrade(state, state.players, offer, formatMoney, addLog);
+          handleMortgagedTradeProps(offer);
+          render();
+          onDone();
+        },
+      },
+      {
+        label: 'Rechazar',
+        action: () => {
+          closeModal();
+          addLog(`${to.name} rechaza el trato con ${from.name}.`);
+          render();
+          onDone();
+        },
+      },
+    ],
+  );
+}
+
+function tryAITradeProposal(player) {
+  const opponents = activePlayers()
+    .filter((p) => p.id !== player.id)
+    .map((p) => p.id);
+  const offer = proposeAITrade(state, player.id, opponents, state.difficultyId, BOARD, RENT_TABLES);
+  if (!offer) return 'none';
+
+  const err = validateTrade(state, state.players, offer);
+  if (err) return 'none';
+
+  const to = state.players[offer.toId];
+  if (to.isAI) {
+    if (shouldAcceptTrade(offer, state, state.difficultyId, BOARD, RENT_TABLES)) {
+      addLog(`🤝 ${player.name} propone un trato a ${to.name}.`);
+      executeTrade(state, state.players, offer, formatMoney, addLog);
+      handleMortgagedTradeProps(offer);
+    } else {
+      addLog(`🤝 ${player.name} propone un trato a ${to.name}, pero ${to.name} lo rechaza.`);
+    }
+    render();
+    return 'done';
+  }
+
+  showAITradeProposal(offer, () => {
+    finishAIEndPhase(player);
+    completeDeferredAITurn();
+  });
+  return 'pending';
 }
 
 function aiPayJailBail(player) {
@@ -1819,9 +1908,18 @@ async function runAITurn() {
         render();
         return;
       }
-      endTurn();
+      const tradeResult = tryAITradeProposal(player);
+      if (tradeResult === 'pending') {
+        deferAITurnCleanup = true;
+        return;
+      }
+      finishAIEndPhase(player);
     }
   } finally {
+    if (deferAITurnCleanup) {
+      deferAITurnCleanup = false;
+      return;
+    }
     if (turnId === aiTurnGeneration) {
       aiTurnRunning = false;
       aiTurnStartedAt = 0;

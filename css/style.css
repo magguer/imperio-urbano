@@ -1376,6 +1376,41 @@ body {
   overflow: visible;
 }
 
+.board--themed-bg {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 30%),
+    var(--board-bg, #1e6b3a);
+}
+
+.board-theme-bg {
+  position: absolute;
+  inset: 4px;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
+  object-fit: cover;
+  object-position: center;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 10px;
+  opacity: 1;
+}
+
+.board--themed-bg .board-center {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.06), transparent 40%),
+    linear-gradient(rgba(12, 18, 15, 0.38), rgba(6, 10, 8, 0.52));
+  box-shadow: inset 0 0 48px rgba(0, 0, 0, 0.26);
+}
+
+.board--themed-bg .board-center::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 12, 10, 0.1);
+  pointer-events: none;
+  z-index: 0;
+}
+
 .cell {
   background: linear-gradient(160deg, #fffaf0, var(--cell-bg) 64%, #d2c5aa);
   color: var(--cell-text);
@@ -1396,6 +1431,41 @@ body {
   transform-style: preserve-3d;
 }
 .cell:hover { transform: translateZ(14px) scale(1.05); z-index: 2; box-shadow: 0 12px 24px rgba(0,0,0,0.22); }
+
+.cell.cell-has-art {
+  padding: 0;
+  background: #ebe4d3;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(44, 36, 22, 0.28), 0 2px 5px rgba(0, 0, 0, 0.15);
+}
+
+.cell-art {
+  display: block;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--cell-art-position, center center);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.cell.cell-has-art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.cell-art-edge-top { --cell-art-position: center top; }
+.cell-art-edge-bottom { --cell-art-position: center bottom; }
+.cell-art-edge-left { --cell-art-position: center center; }
+.cell-art-edge-right { --cell-art-position: center center; }
+
+.cell-has-art .mortgaged { z-index: 2; }
 
 .cell-color-bar {
   width: 100%;
@@ -1703,6 +1773,7 @@ body {
   padding: 0.5rem;
   box-shadow: inset 0 0 40px rgba(0,0,0,0.18);
   position: relative;
+  z-index: 1;
   overflow: hidden;
 }
 
@@ -1719,8 +1790,13 @@ body {
   padding: clamp(0.4rem, 1vh, 0.6rem) 0.5rem 2.75rem;
   gap: 0;
   position: relative;
+  z-index: 10;
   box-sizing: border-box;
   scrollbar-gutter: stable both-edges;
+}
+
+.board-center--dice-rolling .board-center-default {
+  z-index: 4;
 }
 
 .board-center-inner {
@@ -2125,6 +2201,8 @@ body {
   justify-content: center;
   width: 100%;
   min-height: 0;
+  max-height: calc(100% - 3.5rem);
+  overflow-y: auto;
 }
 
 .board-card-actions {
@@ -2221,6 +2299,169 @@ body {
   font-size: 0.85rem;
   margin: 0.25rem 0;
 }
+
+.property-card--themed-art {
+  width: min(96%, 280px);
+  max-height: 100%;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  gap: 0.45rem;
+  overflow-y: auto;
+  flex-shrink: 1;
+}
+
+.property-card-details--art {
+  width: 100%;
+  background: rgba(255, 250, 240, 0.98);
+  border: 2px solid rgba(44, 36, 22, 0.22);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.property-card-details--art .property-card-body {
+  padding: 0.45rem 0.75rem 0.65rem;
+}
+
+.property-card-art-btn {
+  display: block;
+  width: 100%;
+  flex-shrink: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  cursor: zoom-in;
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.property-card-art-btn:focus-visible {
+  outline: 2px solid var(--accent, #f59e0b);
+  outline-offset: 3px;
+}
+
+.property-card-art {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(36vh, 280px);
+  object-fit: contain;
+  object-position: center top;
+  border: 3px solid #2c2416;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+  background: #fffaf0;
+  transition: filter 0.2s ease;
+}
+
+.property-card-art-btn:hover .property-card-art,
+.property-card-art-btn:focus-visible .property-card-art {
+  filter: brightness(1.04);
+}
+
+.property-card-art-zoom-hint {
+  position: absolute;
+  right: 0.45rem;
+  bottom: 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(20, 16, 10, 0.78);
+  color: #fffaf0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.property-card-art-btn:hover .property-card-art-zoom-hint,
+.property-card-art-btn:focus-visible .property-card-art-zoom-hint {
+  opacity: 1;
+}
+
+.property-art-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+
+.property-art-lightbox.hidden {
+  display: none;
+}
+
+body.property-art-lightbox-open {
+  overflow: hidden;
+}
+
+.property-art-lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: rgba(8, 6, 4, 0.9);
+  cursor: zoom-out;
+}
+
+.property-art-lightbox-frame {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  max-width: min(96vw, 920px);
+  text-align: center;
+}
+
+.property-art-lightbox-img {
+  display: block;
+  max-width: 100%;
+  max-height: min(82vh, 900px);
+  width: auto;
+  height: auto;
+  margin: 0 auto;
+  border: 4px solid #2c2416;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+  background: #fffaf0;
+  cursor: default;
+}
+
+.property-art-lightbox-caption {
+  margin-top: 0.75rem;
+  color: #fffaf0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.property-art-lightbox-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 2;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 250, 240, 0.14);
+  color: #fffaf0;
+  font-size: 1.15rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.property-art-lightbox-close:hover,
+.property-art-lightbox-close:focus-visible {
+  background: rgba(255, 250, 240, 0.28);
+  outline: none;
+}
+
 .board-center h1 {
   font-size: clamp(1rem, 2.5vw, 1.8rem);
   font-weight: 800;

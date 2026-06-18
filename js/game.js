@@ -1,9 +1,11 @@
 import {
   BOARD, BOARD_LEN, BOARD_GRID, COLORS, RENT_TABLES, HOUSE_COST, GO_BONUS, JAIL_POSITION,
-  GO_TO_JAIL_POSITION, PLAYER_COLORS, PLAYER_TOKENS, JAIL_BAIL,
+  GO_TO_JAIL_POSITION, PLAYER_COLORS, PLAYER_TOKENS, JAIL_BAIL, currentBoardSize,
   CITY_CARDS, FORTUNE_CARDS, THEME, applyTheme, shuffleDeck,
 } from './board.js';
 import { getBoardConstants, getBoardPositions } from './themes/shared.js';
+import { getCellArtUrl } from './themes/cellArt.js';
+import { applyBoardBackground } from './themes/boardBg.js';
 import {
   createTradeOffer, validateTrade, executeTrade, renderPropertyCheckboxes,
 } from './trade.js';
@@ -2104,6 +2106,7 @@ function paintBoardCard() {
   play?.classList.add('hidden');
   card.classList.remove('hidden');
   content.innerHTML = activeBoardCard.body;
+  bindPropertyCardArtInteractions(content);
   actions.innerHTML = '';
   activeBoardCard.buttons.forEach((btn) => {
     const el = document.createElement('button');
@@ -2122,6 +2125,56 @@ function closeBoardCard() {
   play?.classList.remove('hidden');
 }
 
+function openPropertyArtLightbox(url, label = '') {
+  const lightbox = $('#property-art-lightbox');
+  const img = lightbox?.querySelector('.property-art-lightbox-img');
+  const caption = lightbox?.querySelector('.property-art-lightbox-caption');
+  if (!lightbox || !img) return;
+  img.src = url;
+  img.alt = label;
+  if (caption) caption.textContent = label;
+  lightbox.classList.remove('hidden');
+  document.body.classList.add('property-art-lightbox-open');
+}
+
+function closePropertyArtLightbox() {
+  const lightbox = $('#property-art-lightbox');
+  if (!lightbox) return;
+  lightbox.classList.add('hidden');
+  document.body.classList.remove('property-art-lightbox-open');
+  const img = lightbox.querySelector('.property-art-lightbox-img');
+  if (img) img.removeAttribute('src');
+}
+
+function bindPropertyCardArtInteractions(root) {
+  root?.querySelectorAll('.property-card-art-btn').forEach((btn) => {
+    btn.onclick = (event) => {
+      event.stopPropagation();
+      const url = btn.dataset.artUrl;
+      const label = btn.querySelector('.property-card-art')?.alt || '';
+      if (url) openPropertyArtLightbox(url, label);
+    };
+  });
+}
+
+function initPropertyArtLightbox() {
+  const lightbox = $('#property-art-lightbox');
+  if (!lightbox || lightbox.dataset.bound) return;
+  lightbox.dataset.bound = '1';
+
+  lightbox.querySelector('.property-art-lightbox-backdrop')?.addEventListener('click', closePropertyArtLightbox);
+  lightbox.querySelector('.property-art-lightbox-close')?.addEventListener('click', closePropertyArtLightbox);
+  lightbox.querySelector('.property-art-lightbox-img')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !lightbox.classList.contains('hidden')) {
+      closePropertyArtLightbox();
+    }
+  });
+}
+
 function buildPropertyCardHtml(cellId, extra = '') {
   const cell = BOARD[cellId];
   const prop = state.properties[cellId];
@@ -2131,6 +2184,7 @@ function buildPropertyCardHtml(cellId, extra = '') {
 
   let rows = '';
   if (cell.price) rows += `<div class="property-card-row"><span>Precio</span><strong>${formatMoney(cell.price)}</strong></div>`;
+  if (cell.type === 'tax') rows += `<div class="property-card-row"><span>Pago</span><strong>${formatMoney(scaleTax(cell.amount))}</strong></div>`;
   if (cell.type === 'property' && cell.group) {
     const rents = RENT_TABLES[cell.group];
     rows += `<div class="property-card-row"><span>Alquiler</span><strong>${formatMoney(rents[0])}</strong></div>`;
@@ -2142,6 +2196,37 @@ function buildPropertyCardHtml(cellId, extra = '') {
   if (prop.houses > 0) rows += `<div class="property-card-row"><span>${tb().rowLabel}</span><strong>${formatBuildingLabel(prop.houses)}</strong></div>`;
   if (prop.owner !== null && !prop.mortgaged && isOwnableCell(cell)) {
     rows += `<div class="property-card-row highlight"><span>Alquiler actual</span><strong>${formatMoney(calcRent(cellId))}</strong></div>`;
+  }
+
+  const artUrl = getCellArtUrl(THEME, cellId, currentBoardSize, cell.name);
+
+  if (artUrl) {
+    let statsRows = '';
+    if (cell.type === 'tax') statsRows += `<div class="property-card-row"><span>Pago</span><strong>${formatMoney(scaleTax(cell.amount))}</strong></div>`;
+    if (cell.type === 'property' && cell.group) {
+      const rents = RENT_TABLES[cell.group];
+      statsRows += `<div class="property-card-row"><span>Alquiler</span><strong>${formatMoney(rents[0])}</strong></div>`;
+      statsRows += `<div class="property-card-rents">${rents.map((r, i) => i === 0 ? '' : i < 5 ? `<span>${i}${tb().houseEmoji} ${formatMoney(r)}</span>` : `<span>${tb().hotelEmoji} ${formatMoney(r)}</span>`).join('')}</div>`;
+    }
+    if (cell.type === 'railroad') statsRows += `<div class="property-card-row"><span>Tipo</span><strong>${t().railroadLabel}</strong></div>`;
+    if (cell.type === 'utility') statsRows += `<div class="property-card-row"><span>Tipo</span><strong>${t().utilityLabel}</strong></div>`;
+    if (owner) statsRows += `<div class="property-card-row"><span>Dueño</span><strong>${owner.name}${prop.mortgaged ? ' (hipotecada)' : ''}</strong></div>`;
+    if (prop.houses > 0) statsRows += `<div class="property-card-row"><span>${tb().rowLabel}</span><strong>${formatBuildingLabel(prop.houses)}</strong></div>`;
+    if (prop.owner !== null && !prop.mortgaged && isOwnableCell(cell)) {
+      statsRows += `<div class="property-card-row highlight"><span>Alquiler actual</span><strong>${formatMoney(calcRent(cellId))}</strong></div>`;
+    }
+
+    return `
+      <div class="property-card property-card--themed-art" style="--card-color:${accent}">
+        <button type="button" class="property-card-art-btn" data-art-url="${artUrl}" aria-label="Ampliar ilustración de ${escapeHtml(cell.name)}">
+          <img class="property-card-art" src="${artUrl}" alt="${escapeHtml(cell.name)}" loading="lazy" />
+          <span class="property-card-art-zoom-hint"><i class="fa-solid fa-magnifying-glass-plus" aria-hidden="true"></i> Ampliar</span>
+        </button>
+        <div class="property-card-details property-card-details--art">
+          <div class="property-card-body">${statsRows}${extra}</div>
+        </div>
+      </div>
+    `;
   }
 
   return `
@@ -2176,10 +2261,11 @@ function closeModal() {
 function showBuyModal(cellId) {
   const cell = BOARD[cellId];
   const rent = cell.type === 'property' ? RENT_TABLES[cell.group][0] : null;
+  const hasArt = !!getCellArtUrl(THEME, cellId, currentBoardSize, cell.name);
   const extra = `
     <div class="property-card-extra">
       <div class="property-card-row"><span>Tu dinero</span><strong>${formatMoney(currentPlayer().money)}</strong></div>
-      ${rent != null ? `<div class="property-card-row"><span>Alquiler base</span><strong>${formatMoney(rent)}</strong></div>` : ''}
+      ${rent != null && !hasArt ? `<div class="property-card-row"><span>Alquiler base</span><strong>${formatMoney(rent)}</strong></div>` : ''}
     </div>`;
 
   showBoardCard(
@@ -2549,12 +2635,19 @@ function renderBoard() {
       el.style.setProperty('--cell-color', COLORS[cell.color].bg);
     }
 
+    const artUrl = getCellArtUrl(THEME, i, currentBoardSize, cell.name);
+    if (artUrl) {
+      el.classList.add('cell-has-art', `cell-art-edge-${getCellOwnerEdge(pos)}`);
+      el.setAttribute('aria-label', cell.name);
+    }
+
     el.innerHTML = `
-      ${ownable ? '<div class="cell-color-bar"></div>' : ''}
-      <div class="cell-name">${cell.name}</div>
-      ${ownable && cell.price ? `<div class="cell-price">${formatMoney(cell.price)}</div>` : ''}
-      ${cell.type === 'go' ? `<div class="cell-desc">+${formatMoney(goBonusAmount())}</div>` : ''}
-      ${cell.type === 'tax' ? `<div class="cell-desc">${formatMoney(scaleTax(cell.amount))}</div>` : ''}
+      ${artUrl ? `<img class="cell-art" src="${artUrl}" alt="" loading="lazy" aria-hidden="true" />` : ''}
+      ${!artUrl && ownable ? '<div class="cell-color-bar"></div>' : ''}
+      ${!artUrl ? `<div class="cell-name">${cell.name}</div>` : ''}
+      ${!artUrl && ownable && cell.price ? `<div class="cell-price">${formatMoney(cell.price)}</div>` : ''}
+      ${!artUrl && cell.type === 'go' ? `<div class="cell-desc">+${formatMoney(goBonusAmount())}</div>` : ''}
+      ${!artUrl && cell.type === 'tax' ? `<div class="cell-desc">${formatMoney(scaleTax(cell.amount))}</div>` : ''}
       ${ownable && prop.mortgaged ? '<div class="mortgaged">HIP</div>' : ''}
     `;
 
@@ -2600,6 +2693,7 @@ function renderBoard() {
 
   renderOwnerMarkerLayer(board, positions);
   renderTokenLayer(board, positions);
+  applyBoardBackground(board, THEME, currentBoardSize);
 
   if (keepOverlay) {
     if (diceBoxReady) $('#dice-stage')?.classList.add('webgl-ready');
@@ -3336,6 +3430,7 @@ function initBoardSizePicker() {
 }
 
 function initSetup() {
+  initPropertyArtLightbox();
   const countSelect = $('#player-count');
   const namesContainer = $('#player-names');
 

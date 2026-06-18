@@ -93,7 +93,7 @@ export const BOARD_TEMPLATE_COMPACT = [
 
 // Índices del tablero clásico usados para nombres en modo compacto
 export const COMPACT_NAME_INDICES = [
-  0, 1, 3, 2, 4, 5, 10, 6, 8, 7, 12, 15, 20, 11, 13, 16, 18, 22, 30, 23, 37, 36, 28, 39,
+  0, 1, 3, 2, 4, 5, 10, 6, 8, 7, 12, 15, 20, 11, 13, 16, 18, 21, 30, 23, 37, 36, 28, 39,
 ];
 
 const CARD_TARGET_MAP = {

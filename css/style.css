@@ -2319,7 +2319,8 @@ body {
 }
 
 .property-card--themed-art {
-  width: min(96%, 280px);
+  width: fit-content;
+  max-width: min(96%, 280px);
   max-height: 100%;
   background: transparent;
   border: none;
@@ -2327,6 +2328,7 @@ body {
   gap: 0.45rem;
   overflow-y: auto;
   flex-shrink: 1;
+  align-items: stretch;
 }
 
 .property-card-details--art {
@@ -2343,7 +2345,9 @@ body {
 
 .property-card-art-btn {
   display: block;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
+  align-self: center;
   flex-shrink: 0;
   padding: 0;
   margin: 0;
@@ -2353,6 +2357,7 @@ body {
   position: relative;
   border-radius: 6px;
   overflow: hidden;
+  line-height: 0;
 }
 
 .property-card-art-btn:focus-visible {
@@ -2362,14 +2367,15 @@ body {
 
 .property-card-art {
   display: block;
-  width: 100%;
+  width: auto;
   height: auto;
+  max-width: min(88vw, 260px);
   max-height: min(36vh, 280px);
   object-fit: contain;
   object-position: center top;
   border: 3px solid #2c2416;
   box-shadow: 0 8px 24px rgba(0,0,0,0.28);
-  background: #fffaf0;
+  background: transparent;
   transition: filter 0.2s ease;
 }
 

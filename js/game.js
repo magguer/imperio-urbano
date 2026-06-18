@@ -417,10 +417,15 @@ function paintBoardAction() {
   if (!lastBoardAction) {
     el.innerHTML = '';
     el.classList.add('hidden');
+    el.classList.remove('board-action--start');
     return;
   }
 
-  if (lastBoardAction.type === 'transfer' || lastBoardAction.type === 'message') {
+  el.classList.toggle('board-action--start', lastBoardAction.type === 'gameStart');
+
+  if (lastBoardAction.type === 'gameStart') {
+    el.innerHTML = `<span class="board-action-start">${escapeHtml(lastBoardAction.message)}</span>`;
+  } else if (lastBoardAction.type === 'transfer' || lastBoardAction.type === 'message') {
     el.innerHTML = buildBoardActionHtml(lastBoardAction);
   } else {
     el.textContent = lastBoardAction.message;
@@ -2133,8 +2138,90 @@ function openPropertyArtLightbox(url, label = '') {
   img.src = url;
   img.alt = label;
   if (caption) caption.textContent = label;
+  resetPropertyArtLightboxView();
   lightbox.classList.remove('hidden');
   document.body.classList.add('property-art-lightbox-open');
+}
+
+const LIGHTBOX_ZOOM_MIN = 1;
+const LIGHTBOX_ZOOM_MAX = 4;
+const LIGHTBOX_ZOOM_STEP = 0.5;
+let propertyArtLightboxZoom = 1;
+let propertyArtLightboxPan = { x: 0, y: 0 };
+let propertyArtLightboxDrag = null;
+
+function updatePropertyArtLightboxView() {
+  const lightbox = $('#property-art-lightbox');
+  const pan = lightbox?.querySelector('.property-art-lightbox-pan');
+  const viewport = lightbox?.querySelector('.property-art-lightbox-viewport');
+  const frame = lightbox?.querySelector('.property-art-lightbox-frame');
+  const label = lightbox?.querySelector('.property-art-lightbox-zoom-level');
+  if (!pan || !viewport) return;
+
+  const zoom = propertyArtLightboxZoom;
+  const hasPan = zoom > 1 || propertyArtLightboxPan.x !== 0 || propertyArtLightboxPan.y !== 0;
+  pan.style.transform = hasPan
+    ? `translate(${propertyArtLightboxPan.x}px, ${propertyArtLightboxPan.y}px) scale(${zoom})`
+    : '';
+  viewport.classList.toggle('is-zoomed', zoom > 1);
+  viewport.classList.toggle('is-pannable', zoom > 1);
+  frame?.classList.toggle('is-zoomed', zoom > 1);
+  if (label) label.textContent = `${Math.round(zoom * 100)}%`;
+}
+
+function setPropertyArtLightboxZoom(nextZoom) {
+  propertyArtLightboxZoom = Math.min(
+    LIGHTBOX_ZOOM_MAX,
+    Math.max(LIGHTBOX_ZOOM_MIN, nextZoom),
+  );
+  if (propertyArtLightboxZoom === 1) {
+    propertyArtLightboxPan = { x: 0, y: 0 };
+  }
+  updatePropertyArtLightboxView();
+}
+
+function resetPropertyArtLightboxView() {
+  propertyArtLightboxZoom = 1;
+  propertyArtLightboxPan = { x: 0, y: 0 };
+  propertyArtLightboxDrag = null;
+  updatePropertyArtLightboxView();
+}
+
+function bindPropertyArtLightboxPan(viewport) {
+  const endDrag = (event) => {
+    if (!propertyArtLightboxDrag || propertyArtLightboxDrag.pointerId !== event.pointerId) return;
+    propertyArtLightboxDrag = null;
+    viewport.classList.remove('is-dragging');
+    if (viewport.hasPointerCapture(event.pointerId)) {
+      viewport.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  viewport.addEventListener('pointerdown', (event) => {
+    if (propertyArtLightboxZoom <= 1) return;
+    if (event.button !== 0) return;
+    propertyArtLightboxDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: propertyArtLightboxPan.x,
+      panY: propertyArtLightboxPan.y,
+    };
+    viewport.classList.add('is-dragging');
+    viewport.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+
+  viewport.addEventListener('pointermove', (event) => {
+    if (!propertyArtLightboxDrag || propertyArtLightboxDrag.pointerId !== event.pointerId) return;
+    propertyArtLightboxPan.x = propertyArtLightboxDrag.panX + (event.clientX - propertyArtLightboxDrag.startX);
+    propertyArtLightboxPan.y = propertyArtLightboxDrag.panY + (event.clientY - propertyArtLightboxDrag.startY);
+    updatePropertyArtLightboxView();
+    event.preventDefault();
+  });
+
+  viewport.addEventListener('pointerup', endDrag);
+  viewport.addEventListener('pointercancel', endDrag);
 }
 
 function closePropertyArtLightbox() {
@@ -2143,7 +2230,10 @@ function closePropertyArtLightbox() {
   lightbox.classList.add('hidden');
   document.body.classList.remove('property-art-lightbox-open');
   const img = lightbox.querySelector('.property-art-lightbox-img');
+  const pan = lightbox.querySelector('.property-art-lightbox-pan');
   if (img) img.removeAttribute('src');
+  if (pan) pan.style.transform = '';
+  resetPropertyArtLightboxView();
 }
 
 function bindPropertyCardArtInteractions(root) {
@@ -2164,15 +2254,91 @@ function initPropertyArtLightbox() {
 
   lightbox.querySelector('.property-art-lightbox-backdrop')?.addEventListener('click', closePropertyArtLightbox);
   lightbox.querySelector('.property-art-lightbox-close')?.addEventListener('click', closePropertyArtLightbox);
-  lightbox.querySelector('.property-art-lightbox-img')?.addEventListener('click', (event) => {
+  lightbox.querySelector('[data-zoom="in"]')?.addEventListener('click', (event) => {
     event.stopPropagation();
+    setPropertyArtLightboxZoom(propertyArtLightboxZoom + LIGHTBOX_ZOOM_STEP);
   });
+  lightbox.querySelector('[data-zoom="out"]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setPropertyArtLightboxZoom(propertyArtLightboxZoom - LIGHTBOX_ZOOM_STEP);
+  });
+
+  const viewport = lightbox.querySelector('.property-art-lightbox-viewport');
+  const img = lightbox.querySelector('.property-art-lightbox-img');
+  if (viewport) bindPropertyArtLightboxPan(viewport);
+  img?.addEventListener('dblclick', (event) => {
+    event.stopPropagation();
+    if (propertyArtLightboxZoom > 1) {
+      resetPropertyArtLightboxView();
+    }
+  });
+  img?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (propertyArtLightboxZoom <= 1) {
+      setPropertyArtLightboxZoom(1.5);
+    }
+  });
+  viewport?.addEventListener('wheel', (event) => {
+    if (lightbox.classList.contains('hidden')) return;
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? LIGHTBOX_ZOOM_STEP : -LIGHTBOX_ZOOM_STEP;
+    setPropertyArtLightboxZoom(propertyArtLightboxZoom + delta);
+  }, { passive: false });
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !lightbox.classList.contains('hidden')) {
       closePropertyArtLightbox();
     }
   });
+}
+
+function buildThemedArtStatsRows(cellId) {
+  const cell = BOARD[cellId];
+  const prop = state.properties[cellId];
+  const owner = prop.owner !== null ? state.players[prop.owner] : null;
+  let statsRows = '';
+
+  if (cell.type === 'go') {
+    statsRows += `<div class="property-card-row"><span>Al pasar</span><strong>+${formatMoney(goBonusAmount())}</strong></div>`;
+  } else if (cell.type === 'tax') {
+    statsRows += `<div class="property-card-row"><span>Pago</span><strong>${formatMoney(scaleTax(cell.amount))}</strong></div>`;
+  } else if (cell.type === 'parking') {
+    statsRows += `<div class="property-card-row"><span>Descanso</span><strong>${escapeHtml(cell.desc || 'Sin efecto')}</strong></div>`;
+  } else if (cell.type === 'jail') {
+    statsRows += `<div class="property-card-row"><span>Visita</span><strong>${escapeHtml(cell.desc || t().jailName)}</strong></div>`;
+  } else if (cell.type === 'gotojail') {
+    statsRows += `<div class="property-card-row"><span>Efecto</span><strong>${escapeHtml(cell.desc || `Ir a ${t().jailName}`)}</strong></div>`;
+  } else if (cell.type === 'chance') {
+    statsRows += `<div class="property-card-row"><span>Mazo</span><strong>${t().chanceName}</strong></div>`;
+  } else if (cell.type === 'chest') {
+    statsRows += `<div class="property-card-row"><span>Mazo</span><strong>${t().fortuneName}</strong></div>`;
+  }
+
+  if (cell.type === 'property' && cell.group) {
+    const rents = RENT_TABLES[cell.group];
+    statsRows += `<div class="property-card-row"><span>Alquiler</span><strong>${formatMoney(rents[0])}</strong></div>`;
+    statsRows += `<div class="property-card-rents">${rents.map((r, i) => i === 0 ? '' : i < 5 ? `<span>${i}${tb().houseEmoji} ${formatMoney(r)}</span>` : `<span>${tb().hotelEmoji} ${formatMoney(r)}</span>`).join('')}</div>`;
+  }
+  if (cell.type === 'railroad') {
+    if (cell.price) statsRows += `<div class="property-card-row"><span>Precio</span><strong>${formatMoney(cell.price)}</strong></div>`;
+    statsRows += `<div class="property-card-row"><span>Tipo</span><strong>${t().railroadLabel}</strong></div>`;
+  }
+  if (cell.type === 'utility') {
+    if (cell.price) statsRows += `<div class="property-card-row"><span>Precio</span><strong>${formatMoney(cell.price)}</strong></div>`;
+    statsRows += `<div class="property-card-row"><span>Tipo</span><strong>${t().utilityLabel}</strong></div>`;
+  }
+  if (owner) statsRows += `<div class="property-card-row"><span>Dueño</span><strong>${owner.name}${prop.mortgaged ? ' (hipotecada)' : ''}</strong></div>`;
+  if (prop.houses > 0) statsRows += `<div class="property-card-row"><span>${tb().rowLabel}</span><strong>${formatBuildingLabel(prop.houses)}</strong></div>`;
+  if (prop.owner !== null && !prop.mortgaged && isOwnableCell(cell)) {
+    statsRows += `<div class="property-card-row highlight"><span>Alquiler actual</span><strong>${formatMoney(calcRent(cellId))}</strong></div>`;
+  }
+
+  return statsRows;
+}
+
+function hasPropertyCardDetails(statsRows, extra = '') {
+  if (statsRows) return true;
+  return extra.replace(/<[^>]+>/g, '').trim().length > 0;
 }
 
 function buildPropertyCardHtml(cellId, extra = '') {
@@ -2184,7 +2350,13 @@ function buildPropertyCardHtml(cellId, extra = '') {
 
   let rows = '';
   if (cell.price) rows += `<div class="property-card-row"><span>Precio</span><strong>${formatMoney(cell.price)}</strong></div>`;
+  if (cell.type === 'go') rows += `<div class="property-card-row"><span>Al pasar</span><strong>+${formatMoney(goBonusAmount())}</strong></div>`;
   if (cell.type === 'tax') rows += `<div class="property-card-row"><span>Pago</span><strong>${formatMoney(scaleTax(cell.amount))}</strong></div>`;
+  if (cell.type === 'parking') rows += `<div class="property-card-row"><span>Descanso</span><strong>${escapeHtml(cell.desc || 'Sin efecto')}</strong></div>`;
+  if (cell.type === 'jail') rows += `<div class="property-card-row"><span>Visita</span><strong>${escapeHtml(cell.desc || t().jailName)}</strong></div>`;
+  if (cell.type === 'gotojail') rows += `<div class="property-card-row"><span>Efecto</span><strong>${escapeHtml(cell.desc || `Ir a ${t().jailName}`)}</strong></div>`;
+  if (cell.type === 'chance') rows += `<div class="property-card-row"><span>Mazo</span><strong>${t().chanceName}</strong></div>`;
+  if (cell.type === 'chest') rows += `<div class="property-card-row"><span>Mazo</span><strong>${t().fortuneName}</strong></div>`;
   if (cell.type === 'property' && cell.group) {
     const rents = RENT_TABLES[cell.group];
     rows += `<div class="property-card-row"><span>Alquiler</span><strong>${formatMoney(rents[0])}</strong></div>`;
@@ -2201,20 +2373,12 @@ function buildPropertyCardHtml(cellId, extra = '') {
   const artUrl = getCellArtUrl(THEME, cellId, currentBoardSize, cell.name);
 
   if (artUrl) {
-    let statsRows = '';
-    if (cell.type === 'tax') statsRows += `<div class="property-card-row"><span>Pago</span><strong>${formatMoney(scaleTax(cell.amount))}</strong></div>`;
-    if (cell.type === 'property' && cell.group) {
-      const rents = RENT_TABLES[cell.group];
-      statsRows += `<div class="property-card-row"><span>Alquiler</span><strong>${formatMoney(rents[0])}</strong></div>`;
-      statsRows += `<div class="property-card-rents">${rents.map((r, i) => i === 0 ? '' : i < 5 ? `<span>${i}${tb().houseEmoji} ${formatMoney(r)}</span>` : `<span>${tb().hotelEmoji} ${formatMoney(r)}</span>`).join('')}</div>`;
-    }
-    if (cell.type === 'railroad') statsRows += `<div class="property-card-row"><span>Tipo</span><strong>${t().railroadLabel}</strong></div>`;
-    if (cell.type === 'utility') statsRows += `<div class="property-card-row"><span>Tipo</span><strong>${t().utilityLabel}</strong></div>`;
-    if (owner) statsRows += `<div class="property-card-row"><span>Dueño</span><strong>${owner.name}${prop.mortgaged ? ' (hipotecada)' : ''}</strong></div>`;
-    if (prop.houses > 0) statsRows += `<div class="property-card-row"><span>${tb().rowLabel}</span><strong>${formatBuildingLabel(prop.houses)}</strong></div>`;
-    if (prop.owner !== null && !prop.mortgaged && isOwnableCell(cell)) {
-      statsRows += `<div class="property-card-row highlight"><span>Alquiler actual</span><strong>${formatMoney(calcRent(cellId))}</strong></div>`;
-    }
+    const statsRows = buildThemedArtStatsRows(cellId);
+    const detailsBlock = hasPropertyCardDetails(statsRows, extra)
+      ? `<div class="property-card-details property-card-details--art">
+          <div class="property-card-body">${statsRows}${extra}</div>
+        </div>`
+      : '';
 
     return `
       <div class="property-card property-card--themed-art" style="--card-color:${accent}">
@@ -2222,9 +2386,7 @@ function buildPropertyCardHtml(cellId, extra = '') {
           <img class="property-card-art" src="${artUrl}" alt="${escapeHtml(cell.name)}" loading="lazy" />
           <span class="property-card-art-zoom-hint"><i class="fa-solid fa-magnifying-glass-plus" aria-hidden="true"></i> Ampliar</span>
         </button>
-        <div class="property-card-details property-card-details--art">
-          <div class="property-card-body">${statsRows}${extra}</div>
-        </div>
+        ${detailsBlock}
       </div>
     `;
   }
@@ -3335,6 +3497,14 @@ function updateTokenTrigger(playerIndex) {
   btn.innerHTML = `<i class="fa-solid ${token.icon}"></i>`;
 }
 
+function showNewGameBanner() {
+  setBoardAction({
+    type: 'gameStart',
+    message: t().startGameMessage || 'Comenzar juego',
+  });
+  pulseBoardAction();
+}
+
 function startGame() {
   const themeId = document.querySelector('input[name="game-theme"]:checked')?.value || 'default';
   const difficultyId = document.querySelector('input[name="game-difficulty"]:checked')?.value || 'normal';
@@ -3359,6 +3529,7 @@ function startGame() {
   $('#setup-screen').classList.add('hidden');
   $('#game-screen').classList.remove('hidden');
   render();
+  showNewGameBanner();
   initDiceBox();
 }
 

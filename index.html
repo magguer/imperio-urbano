@@ -232,7 +232,16 @@
   <div id="property-art-lightbox" class="property-art-lightbox hidden" role="dialog" aria-modal="true" aria-label="Ilustración ampliada">
     <button type="button" class="property-art-lightbox-backdrop" aria-label="Cerrar vista ampliada"></button>
     <figure class="property-art-lightbox-frame">
-      <img class="property-art-lightbox-img" src="" alt="" />
+      <div class="property-art-lightbox-toolbar" aria-label="Controles de zoom">
+        <button type="button" class="property-art-lightbox-zoom-btn" data-zoom="out" aria-label="Alejar">−</button>
+        <span class="property-art-lightbox-zoom-level">100%</span>
+        <button type="button" class="property-art-lightbox-zoom-btn" data-zoom="in" aria-label="Acercar">+</button>
+      </div>
+      <div class="property-art-lightbox-viewport">
+        <div class="property-art-lightbox-pan">
+          <img class="property-art-lightbox-img" src="" alt="" />
+        </div>
+      </div>
       <figcaption class="property-art-lightbox-caption"></figcaption>
     </figure>
     <button type="button" class="property-art-lightbox-close" aria-label="Cerrar"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>

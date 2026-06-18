@@ -53,6 +53,7 @@ export default {
 
   // Índices del tablero clásico (40 casillas). Ver js/themes/cellArt.js
   cellArt: {
+    0: 'start_box.png',
     1: 'bolson_cerrado_box.png',
     2: 'destino_box.png',
     3: 'delagua_box.png',
@@ -62,6 +63,7 @@ export default {
     7: 'saber_box.png',
     8: 'bree_box.png',
     9: 'fornost_box.png',
+    10: 'mazmorra_de_barad_dur.png',
     11: 'edoras_box.png',
     12: 'palantir_box.png',
     15: 'camino_real_del_sur.png',
@@ -71,6 +73,7 @@ export default {
     17: 'destino_box.png',
     18: 'minas_thirit_box.png',
     19: 'pelennor_box.png',
+    20: 'terras_libres_box.png',
     21: 'black_door_box.png',
     22: 'saber_box.png',
     23: 'barad_dur_box.png',
@@ -80,6 +83,7 @@ export default {
     27: 'rhun_box.png',
     28: 'fuego_de_dragon.png',
     29: 'umbar_box.png',
+    30: 'a_la_mazmorra_box.png',
     31: 'lorien_box.png',
     32: 'fangorn_box.png',
     34: 'erebor_box.png',
@@ -121,6 +125,10 @@ export default {
     gondolin: 'gondolin_box.png',
     impuesto_elfico: 'elfic_tax_box.png',
     valinor: 'valinor_box.png',
+    la_comarca: 'start_box.png',
+    solo_visita: 'mazmorra_de_barad_dur.png',
+    tierras_libres: 'terras_libres_box.png',
+    a_las_mazmorras_de_barad_dur: 'a_la_mazmorra_box.png',
   },
 
   colors: {
@@ -198,6 +206,7 @@ export default {
     centerTitle: 'Tierra Media',
     centerTagline: 'Un Anillo para dominarlos a todos',
     welcomeLog: '¡La Comunidad se reúne! Que gane quien unifique la Tierra Media.',
+    startGameMessage: 'Comenzar juego',
     winMessage: 'Ha forjado un imperio digno de los Reyes de Gondor.',
     goName: 'LA COMARCA',
     jailName: 'Mazmorras de Barad-dûr',

@@ -37,10 +37,11 @@
           <section class="setup-section">
             <h2 class="setup-section-title">
               <i class="fa-solid fa-gauge-high" aria-hidden="true"></i>
-              Dificultad
+              Dificultad del juego
             </h2>
             <div id="difficulty-picker" class="difficulty-picker"></div>
             <p id="difficulty-summary" class="difficulty-summary" aria-live="polite"></p>
+            <p class="setup-hint setup-hint--inline">Capital inicial, multas e impuestos para todos los jugadores.</p>
           </section>
 
           <section class="setup-section">
@@ -68,6 +69,39 @@
             </div>
           </section>
 
+          <section class="setup-section setup-section--compact">
+            <h2 class="setup-section-title">
+              <i class="fa-solid fa-bolt" aria-hidden="true"></i>
+              Eventos del mundo
+            </h2>
+            <label class="setup-feature-toggle">
+              <input type="checkbox" id="world-events-enabled" checked>
+              <span class="setup-feature-toggle-body">
+                <strong>Eventos del mundo activos</strong>
+                <small>Saqueos, regalos, traspasos de propiedades y más — con textos según la temática.</small>
+              </span>
+            </label>
+            <div id="world-events-options" class="world-events-options">
+              <span class="setup-field-label">Frecuencia</span>
+              <div class="world-events-mode-picker">
+                <label class="world-events-mode-option">
+                  <input type="radio" name="world-events-mode" value="interval" checked>
+                  <span class="world-events-mode-body">
+                    <strong>Cada ~8 turnos</strong>
+                    <small>Ritmo predecible, un evento cada dos rondas (4 jugadores).</small>
+                  </span>
+                </label>
+                <label class="world-events-mode-option">
+                  <input type="radio" name="world-events-mode" value="random">
+                  <span class="world-events-mode-body">
+                    <strong>Random</strong>
+                    <small>Sorpresa total: puede pasar en cualquier turno (sin patrón fijo).</small>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </section>
+
           <section class="setup-section">
             <h2 class="setup-section-title">
               <i class="fa-solid fa-users" aria-hidden="true"></i>
@@ -82,7 +116,7 @@
               <option value="6">6 jugadores</option>
             </select>
             <div id="player-names" class="player-names-grid"></div>
-            <p class="setup-hint">Marca «Computadora (IA)» para rivales automáticos. Su nivel depende de la dificultad elegida.</p>
+            <p class="setup-hint">Marca «Computadora (IA)» para rivales automáticos y elige su nivel individual (Casual, Estándar, Dura o Brutal).</p>
           </section>
 
           <div id="resume-section" class="resume-section hidden">

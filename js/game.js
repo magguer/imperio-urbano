@@ -13,7 +13,7 @@ import {
   createAuction, getCurrentBidder, advanceBidder, placeBid, passBid,
   isAuctionOver, getAuctionSummary, allPassed,
 } from './auction.js';
-import { THEMES, getTheme } from './themes/index.js';
+import { THEMES, getTheme, getThemeDefaultPlayerName } from './themes/index.js';
 import { DEFAULT_BUILDINGS } from './themes/shared.js';
 import { getDifficultyPreset, DIFFICULTY_LIST, formatDifficultySummary } from './difficulty.js';
 import {
@@ -21,6 +21,26 @@ import {
   pickHouseToSell, pickPropertyToMortgage, pickPropertyToUnmortgage, shouldAcceptTrade, proposeAITrade, defaultAIName,
 } from './ai.js';
 import * as sounds from './sounds.js';
+import { shouldTriggerWorldEvent, resolveWorldEvent } from './worldEvents.js';
+import {
+  assignPremiumCells,
+  isPremiumUnowned,
+  ensurePremiumBuffIds,
+} from './premiumCells.js';
+import {
+  tickPlayerBuffs,
+  getBuffPresentation,
+  getPremiumBuffPreview,
+  resolvePurchasePrice,
+  consumePurchaseDiscount,
+  tryConsumeRentShield,
+  getCardMoneyBonus,
+  normalizePlayerBuff,
+  normalizePremiumBuffIds,
+  previewBuffGrant,
+  applyBuffToPlayer,
+  shouldReplaceActiveBuff,
+} from './playerBuffs.js';
 
 const t = () => THEME.strings;
 const tb = () => THEME?.strings?.buildings ?? DEFAULT_BUILDINGS;
@@ -60,6 +80,393 @@ let activeRollId = 0;
 let rollingSince = 0;
 let diceAnimating = false;
 let rollWatchdogTimer = null;
+const WORLD_EVENT_PAUSE_MS = 10000;
+const CARD_FLIP_REVEAL_MS = 1600;
+let worldEventPauseUntil = 0;
+let worldEventPauseTimer = null;
+let worldEventPauseCountdownTimer = null;
+let worldEventPauseActive = false;
+let cardRevealPauseUntil = 0;
+let cardRevealPauseTimer = null;
+let cardRevealPauseCountdownTimer = null;
+let cardRevealFlipTimer = null;
+let cardRevealPauseActive = false;
+let cardRevealFlipState = 'idle';
+let pendingCardReveal = null;
+let pendingPremiumReveal = null;
+
+function isWorldEventPaused() {
+  return worldEventPauseActive && worldEventPauseUntil > Date.now();
+}
+
+function isCardRevealPaused() {
+  return cardRevealPauseActive;
+}
+
+function isGameplayPaused() {
+  return isWorldEventPaused() || isCardRevealPaused();
+}
+
+function clearWorldEventPauseTimers() {
+  if (worldEventPauseTimer) {
+    clearTimeout(worldEventPauseTimer);
+    worldEventPauseTimer = null;
+  }
+  if (worldEventPauseCountdownTimer) {
+    clearInterval(worldEventPauseCountdownTimer);
+    worldEventPauseCountdownTimer = null;
+  }
+}
+
+function endWorldEventPause() {
+  if (!worldEventPauseActive) return;
+
+  clearWorldEventPauseTimers();
+  worldEventPauseActive = false;
+  worldEventPauseUntil = 0;
+  document.body.classList.remove('world-event-pause');
+  hideWorldEventOverlay();
+  paintBoardAction();
+  render();
+  scheduleAI();
+}
+
+function hideWorldEventOverlay() {
+  const overlay = $('#world-event-overlay');
+  if (!overlay) return;
+  overlay.classList.add('hidden');
+  overlay.classList.remove(
+    'world-event-overlay--good',
+    'world-event-overlay--bad',
+    'world-event-overlay--mixed',
+  );
+  $('#world-event-overlay-flat')?.classList.remove('hidden');
+  $('#world-event-overlay-flip')?.classList.add('hidden');
+  const flipRoot = $('#center-pause-flip-root');
+  if (flipRoot) flipRoot.innerHTML = '';
+  $('#world-event-overlay-flip .center-pause-footer')?.classList.remove('center-pause-footer--waiting');
+  getCenterFlipCard()?.classList.remove('is-flipped');
+  setCenterPauseControlsVisible(false);
+}
+
+function getCenterFlipCard() {
+  return $('#center-pause-flip-root')?.querySelector('.premium-flip-card') || null;
+}
+
+function worldEventMessageBody(action) {
+  const msg = action.message || '';
+  const prefix = `${action.title}:`;
+  if (msg.startsWith(prefix)) return msg.slice(prefix.length).trim();
+  return msg;
+}
+
+function getPauseSecondsLeft(pauseUntil, isPaused) {
+  if (!isPaused()) return 0;
+  return Math.max(1, Math.ceil((pauseUntil - Date.now()) / 1000));
+}
+
+function getPauseElapsedPercent(pauseUntil, isPaused) {
+  if (!isPaused()) return 100;
+  return Math.max(0, Math.min(100, ((WORLD_EVENT_PAUSE_MS - (pauseUntil - Date.now())) / WORLD_EVENT_PAUSE_MS) * 100));
+}
+
+function paintCenterPauseOverlay(action) {
+  const overlay = $('#world-event-overlay');
+  if (!overlay || !action || (action.type !== 'worldEvent' && action.type !== 'cardDraw' && action.type !== 'premiumBuff')) {
+    hideWorldEventOverlay();
+    return;
+  }
+
+  overlay.classList.remove('hidden');
+  overlay.classList.remove(
+    'world-event-overlay--good',
+    'world-event-overlay--bad',
+    'world-event-overlay--mixed',
+  );
+  overlay.classList.add(`world-event-overlay--${action.tone}`);
+
+  const flatPanel = $('#world-event-overlay-flat');
+  const flipPanel = $('#world-event-overlay-flip');
+
+  if (action.type === 'worldEvent') {
+    flatPanel?.classList.remove('hidden');
+    flipPanel?.classList.add('hidden');
+
+    const emojiEl = flatPanel?.querySelector('.world-event-overlay-emoji');
+    const kickerEl = flatPanel?.querySelector('.world-event-overlay-kicker');
+    const titleEl = flatPanel?.querySelector('.world-event-overlay-title');
+    const msgEl = flatPanel?.querySelector('.world-event-overlay-message');
+    const countdownEl = flatPanel?.querySelector('.world-event-overlay-countdown');
+    const progressEl = flatPanel?.querySelector('.world-event-overlay-progress');
+
+    if (kickerEl) kickerEl.textContent = 'Evento del mundo';
+    if (emojiEl) emojiEl.textContent = action.emoji;
+    if (titleEl) titleEl.textContent = action.title;
+    if (msgEl) msgEl.innerHTML = colorizeBoardMessage(worldEventMessageBody(action));
+
+    const secondsLeft = getPauseSecondsLeft(worldEventPauseUntil, isWorldEventPaused);
+    const elapsed = getPauseElapsedPercent(worldEventPauseUntil, isWorldEventPaused);
+
+    if (countdownEl) countdownEl.textContent = `Continúa en ${secondsLeft}s`;
+    if (progressEl) progressEl.style.width = `${elapsed}%`;
+
+    const dismissBtn = flatPanel?.querySelector('.world-event-overlay-dismiss');
+    if (dismissBtn) dismissBtn.onclick = endWorldEventPause;
+    return;
+  }
+
+  flatPanel?.classList.add('hidden');
+  flipPanel?.classList.remove('hidden');
+  if (action.type === 'premiumBuff') {
+    paintPremiumBuffFlipContent(action);
+  } else {
+    paintCardDrawFlipContent(action);
+  }
+  updateCenterPauseTimerUI();
+  restoreCardFlipVisualState();
+
+  const dismissBtn = $('#center-pause-dismiss');
+  if (dismissBtn) dismissBtn.onclick = endCardRevealPause;
+}
+
+function stripLeadingEmoji(text) {
+  return String(text).replace(/^(\p{Extended_Pictographic})\s*/u, '').trim();
+}
+
+function buildDeckCardBackHtml(deckName, deckTitle) {
+  const emoji = leadingEmoji(deckTitle);
+  const title = stripLeadingEmoji(deckTitle);
+  const deckLabel = deckName === 'city' ? t().chanceName : t().fortuneName;
+
+  return `
+    <div class="deck-card-back deck-card-back--${deckName === 'city' ? 'chance' : 'fortune'}">
+      <div class="deck-card-back-shine" aria-hidden="true"></div>
+      <span class="deck-card-back-emoji" aria-hidden="true">${emoji}</span>
+      <h3 class="deck-card-back-title">${escapeHtml(title)}</h3>
+      <p class="deck-card-back-sub">${escapeHtml(deckLabel)}</p>
+    </div>`;
+}
+
+function buildCardDrawFaceHtml(action) {
+  return `
+    <div class="deck-card-reveal premium-reveal-back deck-card-reveal--${action.tone}">
+      <div class="premium-reveal-back-shine" aria-hidden="true"></div>
+      <p class="premium-reveal-kicker">${escapeHtml(stripLeadingEmoji(action.deckTitle))}</p>
+      <div class="premium-reveal-emoji" aria-hidden="true">${action.emoji}</div>
+      <h3 class="premium-reveal-title">${escapeHtml(action.title)}</h3>
+      <div class="premium-reveal-desc board-message">${colorizeLogText(action.message)}</div>
+    </div>`;
+}
+
+function buildCardDrawFlipSceneHtml(action) {
+  return `
+    <div class="premium-flip-scene card-draw-flip-scene">
+      <div class="premium-flip-card" id="card-draw-flip-card">
+        <div class="premium-flip-face premium-flip-front">
+          ${buildDeckCardBackHtml(action.deckName, action.deckTitle)}
+        </div>
+        <div class="premium-flip-face premium-flip-face-back">
+          ${buildCardDrawFaceHtml(action)}
+        </div>
+      </div>
+    </div>`;
+}
+
+function paintCardDrawFlipContent(action) {
+  const root = $('#center-pause-flip-root');
+  if (root && !root.querySelector('#card-draw-flip-card')) {
+    root.innerHTML = buildCardDrawFlipSceneHtml(action);
+  }
+}
+
+function paintPremiumBuffFlipContent(action) {
+  const root = $('#center-pause-flip-root');
+  if (root && !root.querySelector('#premium-flip-card')) {
+    root.innerHTML = buildPremiumFlipRevealHtml(action.cellId, action.buffResult);
+    bindPropertyCardArtInteractions(root);
+    const premiumCard = root.querySelector('.property-card--premium');
+    const sheenTarget = premiumCard?.querySelector('.property-card-premium-wrap') || premiumCard;
+    if (sheenTarget && action.cellId != null) {
+      applyPremiumSheenStyle(sheenTarget, action.cellId);
+    }
+  }
+}
+
+function setCenterPauseControlsVisible(visible) {
+  const footer = $('#world-event-overlay-flip .center-pause-footer');
+  footer?.classList.toggle('center-pause-footer--waiting', !visible);
+  $$('#world-event-overlay-flip .center-pause-controls').forEach((el) => {
+    el.classList.toggle('center-pause-controls-hidden', !visible);
+  });
+}
+
+function restoreCardFlipVisualState() {
+  const flip = getCenterFlipCard();
+  if (!flip) return;
+
+  if (cardRevealFlipState === 'flipped') {
+    flip.classList.add('is-flipped');
+    setCenterPauseControlsVisible(true);
+  } else {
+    flip.classList.remove('is-flipped');
+    setCenterPauseControlsVisible(false);
+  }
+}
+
+function updateCenterPauseTimerUI() {
+  const countdownEl = $('#center-pause-countdown');
+  const progressEl = $('#center-pause-progress');
+  if (!countdownEl || !progressEl) return;
+
+  if (cardRevealFlipState !== 'flipped') {
+    countdownEl.textContent = 'Revelando carta…';
+    progressEl.style.width = '0%';
+    return;
+  }
+
+  const secondsLeft = getPauseSecondsLeft(cardRevealPauseUntil, () => cardRevealPauseUntil > Date.now());
+  const elapsed = getPauseElapsedPercent(cardRevealPauseUntil, () => cardRevealPauseUntil > Date.now());
+  countdownEl.textContent = `Continúa en ${secondsLeft}s`;
+  progressEl.style.width = `${elapsed}%`;
+}
+
+function startCenterFlipAnimation() {
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  cardRevealFlipState = 'idle';
+  getCenterFlipCard()?.classList.remove('is-flipped');
+  setCenterPauseControlsVisible(false);
+
+  if (reducedMotion) {
+    cardRevealFlipState = 'flipped';
+    getCenterFlipCard()?.classList.add('is-flipped');
+    beginCardRevealReadingPeriod();
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      if (!cardRevealPauseActive) return;
+      cardRevealFlipState = 'flipped';
+      getCenterFlipCard()?.classList.add('is-flipped');
+    }, 480);
+  });
+
+  if (cardRevealFlipTimer) clearTimeout(cardRevealFlipTimer);
+  cardRevealFlipTimer = setTimeout(beginCardRevealReadingPeriod, CARD_FLIP_REVEAL_MS);
+}
+
+function beginCardRevealReadingPeriod() {
+  if (!cardRevealPauseActive) return;
+  if (cardRevealPauseUntil > 0) return;
+
+  cardRevealPauseUntil = Date.now() + WORLD_EVENT_PAUSE_MS;
+  setCenterPauseControlsVisible(true);
+  updateCenterPauseTimerUI();
+
+  if (cardRevealPauseCountdownTimer) clearInterval(cardRevealPauseCountdownTimer);
+  cardRevealPauseCountdownTimer = setInterval(() => {
+    if (!cardRevealPauseActive || cardRevealPauseUntil <= Date.now()) {
+      endCardRevealPause();
+      return;
+    }
+    updateCenterPauseTimerUI();
+  }, 200);
+
+  if (cardRevealPauseTimer) clearTimeout(cardRevealPauseTimer);
+  cardRevealPauseTimer = setTimeout(endCardRevealPause, WORLD_EVENT_PAUSE_MS);
+}
+
+function paintWorldEventOverlay(action) {
+  paintCenterPauseOverlay(action);
+}
+
+function beginWorldEventPause() {
+  clearWorldEventPauseTimers();
+  worldEventPauseActive = true;
+  worldEventPauseUntil = Date.now() + WORLD_EVENT_PAUSE_MS;
+  document.body.classList.add('world-event-pause');
+  paintWorldEventOverlay(lastBoardAction);
+  paintBoardAction();
+  render();
+
+  worldEventPauseCountdownTimer = setInterval(() => {
+    if (!isWorldEventPaused()) {
+      endWorldEventPause();
+      return;
+    }
+    paintWorldEventOverlay(lastBoardAction);
+  }, 200);
+
+  worldEventPauseTimer = setTimeout(endWorldEventPause, WORLD_EVENT_PAUSE_MS);
+}
+
+function clearCardRevealPauseTimers() {
+  if (cardRevealPauseTimer) {
+    clearTimeout(cardRevealPauseTimer);
+    cardRevealPauseTimer = null;
+  }
+  if (cardRevealPauseCountdownTimer) {
+    clearInterval(cardRevealPauseCountdownTimer);
+    cardRevealPauseCountdownTimer = null;
+  }
+  if (cardRevealFlipTimer) {
+    clearTimeout(cardRevealFlipTimer);
+    cardRevealFlipTimer = null;
+  }
+}
+
+function getCardRevealTone(card) {
+  if (card.action === 'money') return card.amount >= 0 ? 'good' : 'bad';
+  if (card.action === 'jail') return 'bad';
+  if (card.action === 'jailfree') return 'good';
+  return 'mixed';
+}
+
+function leadingEmoji(text) {
+  const match = String(text).match(/^(\p{Extended_Pictographic})/u);
+  return match ? match[1] : '🎴';
+}
+
+async function endCardRevealPause() {
+  if (!cardRevealPauseActive) return;
+
+  clearCardRevealPauseTimers();
+  cardRevealPauseActive = false;
+  cardRevealPauseUntil = 0;
+  cardRevealFlipState = 'idle';
+  document.body.classList.remove('world-event-pause');
+  hideWorldEventOverlay();
+
+  const pendingCard = pendingCardReveal;
+  const pendingPremium = pendingPremiumReveal;
+  pendingCardReveal = null;
+  pendingPremiumReveal = null;
+  paintBoardAction();
+  renderBoard();
+  renderPlayers();
+  renderActions();
+  renderLog();
+
+  if (pendingCard) {
+    await executeCard(pendingCard.card, pendingCard.playerId);
+  } else if (pendingPremium?.onComplete) {
+    pendingPremium.onComplete();
+  }
+
+  saveGame();
+  scheduleAI();
+}
+
+function beginCardRevealPause() {
+  clearCardRevealPauseTimers();
+  cardRevealPauseActive = true;
+  cardRevealPauseUntil = 0;
+  cardRevealFlipState = 'idle';
+  document.body.classList.add('world-event-pause');
+  render();
+  setTimeout(startCenterFlipAnimation, 0);
+}
 
 const DICE_ROLL_TIMEOUT_MS = 8000;
 const DICE_INIT_TIMEOUT_MS = 10000;
@@ -86,29 +493,43 @@ function getSetupBoardSize() {
   return document.querySelector('input[name="board-size"]:checked')?.value || 'classic';
 }
 
-function createInitialState(playerConfigs, themeId = 'default', difficultyId = 'normal', boardSize = 'classic') {
+function getSetupGameDifficulty() {
+  return document.querySelector('input[name="game-difficulty"]:checked')?.value || 'normal';
+}
+
+function aiDifficultyFor(player) {
+  if (!player) return state?.difficultyId || 'normal';
+  return player.aiDifficultyId || state?.difficultyId || 'normal';
+}
+
+function createInitialState(playerConfigs, themeId = 'default', difficultyId = 'normal', boardSize = 'classic', options = {}) {
   applyTheme(themeId, boardSize);
   const difficulty = getDifficultyPreset(difficultyId);
   const { housesLeft, hotelsLeft } = getBoardConstants(boardSize);
 
-  const properties = BOARD.map((cell) => ({
+  const properties = BOARD.map(() => ({
     owner: null,
     houses: 0,
     mortgaged: false,
+    premium: false,
+    premiumBuffId: null,
   }));
+  assignPremiumCells(properties, BOARD);
 
-  const players = playerConfigs.map(({ name, token, isAI }, i) => ({
+  const players = playerConfigs.map(({ name, token, isAI, aiDifficultyId }, i) => ({
     id: i,
     name: name.trim() || (isAI ? defaultAIName(i) : `Jugador ${i + 1}`),
     token,
     color: PLAYER_COLORS[i],
     isAI: !!isAI,
+    aiDifficultyId: isAI ? (aiDifficultyId || difficulty.id) : null,
     money: difficulty.startingMoney,
     position: 0,
     inJail: false,
     jailTurns: 0,
     jailFreeCards: 0,
     bankrupt: false,
+    activeBuff: null,
   }));
 
   return {
@@ -131,6 +552,10 @@ function createInitialState(playerConfigs, themeId = 'default', difficultyId = '
     hotelsLeft,
     freeParkingPot: 0,
     auction: null,
+    worldEventsEnabled: options.worldEventsEnabled !== false,
+    worldEventsMode: options.worldEventsMode === 'random' ? 'random' : 'interval',
+    turnCounter: 0,
+    lastWorldEventTurn: 0,
   };
 }
 
@@ -161,6 +586,17 @@ function resetDiceFlowState() {
   aiTurnScheduled = false;
   deferAITurnCleanup = false;
   clearRollWatchdog();
+  clearWorldEventPauseTimers();
+  worldEventPauseActive = false;
+  worldEventPauseUntil = 0;
+  clearCardRevealPauseTimers();
+  cardRevealPauseActive = false;
+  cardRevealPauseUntil = 0;
+  cardRevealFlipState = 'idle';
+  pendingCardReveal = null;
+  pendingPremiumReveal = null;
+  document.body.classList.remove('world-event-pause');
+  hideWorldEventOverlay();
 }
 
 function invalidateStuckRoll() {
@@ -216,6 +652,7 @@ function recoverStuckGameState() {
 
 function scheduleAI() {
   if (aiTurnScheduled || !state || state.winner) return;
+  if (isGameplayPaused()) return;
 
   recoverStuckGameState();
 
@@ -422,9 +859,50 @@ function paintBoardAction() {
   }
 
   el.classList.toggle('board-action--start', lastBoardAction.type === 'gameStart');
+  el.classList.remove(
+    'board-action--world-event',
+    'board-action--world-event-good',
+    'board-action--world-event-bad',
+    'board-action--world-event-mixed',
+    'board-action--player-buff',
+    'board-action--player-buff-good',
+  );
 
   if (lastBoardAction.type === 'gameStart') {
     el.innerHTML = `<span class="board-action-start">${escapeHtml(lastBoardAction.message)}</span>`;
+  } else if (lastBoardAction.type === 'cardDraw' || lastBoardAction.type === 'premiumBuff') {
+    if (isCardRevealPaused()) {
+      el.innerHTML = '';
+      el.classList.add('hidden');
+      return;
+    }
+    el.classList.add('board-action--world-event', `board-action--world-event-${lastBoardAction.tone}`);
+    el.innerHTML = `
+      <span class="board-action-world-event-compact">
+        <span class="board-action-world-event-compact-icon" aria-hidden="true">${lastBoardAction.emoji}</span>
+        <span class="board-action-world-event-compact-text">${escapeHtml(lastBoardAction.title)}</span>
+      </span>`;
+  } else if (lastBoardAction.type === 'worldEvent') {
+    if (isWorldEventPaused()) {
+      el.innerHTML = '';
+      el.classList.add('hidden');
+      return;
+    }
+    el.classList.add('board-action--world-event', `board-action--world-event-${lastBoardAction.tone}`);
+    el.innerHTML = `
+      <span class="board-action-world-event-compact">
+        <span class="board-action-world-event-compact-icon" aria-hidden="true">${lastBoardAction.emoji}</span>
+        <span class="board-action-world-event-compact-text">${escapeHtml(lastBoardAction.title)}</span>
+      </span>`;
+  } else if (lastBoardAction.type === 'playerBuff') {
+    el.classList.add('board-action--player-buff', `board-action--player-buff-${lastBoardAction.tone}`);
+    el.innerHTML = `
+      <span class="board-action-player-buff-compact">
+        <span class="board-action-player-buff-compact-icon" aria-hidden="true">${lastBoardAction.emoji}</span>
+        <span class="board-action-player-buff-compact-text">
+          <strong>${escapeHtml(lastBoardAction.playerName)}</strong> · ${escapeHtml(lastBoardAction.title)}
+        </span>
+      </span>`;
   } else if (lastBoardAction.type === 'transfer' || lastBoardAction.type === 'message') {
     el.innerHTML = buildBoardActionHtml(lastBoardAction);
   } else {
@@ -445,11 +923,19 @@ function formatMoney(n) {
   return `$${n}`;
 }
 
+function formatBuffTagLabel(buffLabel) {
+  if (!buffLabel) return '';
+  if (buffLabel.chargesLeft != null) {
+    return `${buffLabel.emoji} ${buffLabel.title} · ${buffLabel.chargesLeft}u · ${buffLabel.roundsLeft}r`;
+  }
+  return `${buffLabel.emoji} ${buffLabel.title} · ${buffLabel.roundsLeft}r`;
+}
+
 function diff() {
   return getDifficultyPreset(state?.difficultyId || 'normal');
 }
 
-function goBonusAmount() {
+function goBonusAmount(player = null) {
   return Math.round(GO_BONUS * diff().goBonusMul);
 }
 
@@ -463,6 +949,14 @@ function scaleTax(amount) {
 
 function scaleCardFine(amount) {
   return Math.round(Math.abs(amount) * diff().fineMul);
+}
+
+function houseCostForPlayer(group, player) {
+  return HOUSE_COST[group] || 0;
+}
+
+function houseCostTableFor(player) {
+  return HOUSE_COST;
 }
 
 function scaleCardIncome(amount) {
@@ -510,25 +1004,24 @@ function calcRent(cellId) {
   const prop = state.properties[cellId];
   if (prop.owner === null || prop.mortgaged) return 0;
 
+  let rent = 0;
+
   if (cell.type === 'property') {
     const table = RENT_TABLES[cell.group];
-    if (prop.houses === 5) return table[5];
-    if (prop.houses > 0) return table[prop.houses];
-    return ownsFullGroup(prop.owner, cell.group) ? table[0] * 2 : table[0];
-  }
-
-  if (cell.type === 'railroad') {
+    if (prop.houses === 5) rent = table[5];
+    else if (prop.houses > 0) rent = table[prop.houses];
+    else rent = ownsFullGroup(prop.owner, cell.group) ? table[0] * 2 : table[0];
+  } else if (cell.type === 'railroad') {
     const n = countOwnedRailroads(prop.owner);
-    return [25, 50, 100, 200][n - 1] || 25;
-  }
-
-  if (cell.type === 'utility') {
+    rent = [25, 50, 100, 200][n - 1] || 25;
+  } else if (cell.type === 'utility') {
     const n = countOwnedUtilities(prop.owner);
     const diceTotal = state.dice[0] + state.dice[1] || 7;
-    return n === 2 ? diceTotal * 10 : diceTotal * 4;
+    rent = n === 2 ? diceTotal * 10 : diceTotal * 4;
   }
 
-  return 0;
+  rent = Math.round(rent);
+  return rent;
 }
 
 function applyPayment(fromId, toId, amount, reason, toFreeParking = false) {
@@ -822,7 +1315,7 @@ function createPropertyActionCard(id, cell, houses, mortgaged, player) {
     const needHotel = houses === 4;
     const canBuildEvenly = houses === minHousesInGroup;
     const hasSupply = needHotel ? state.hotelsLeft > 0 : state.housesLeft > 0;
-    const cost = HOUSE_COST[cell.group];
+    const cost = houseCostForPlayer(cell.group, player);
 
     if (canBuildEvenly && hasSupply && player.money >= cost) {
       const b = document.createElement('button');
@@ -922,6 +1415,10 @@ function buildPlayerDetailsHtml(player, assets) {
   if (withBuildings) summaryParts.push(`${withBuildings} con ${tb().houses}`);
   if (player.jailFreeCards) summaryParts.push(`${player.jailFreeCards} ${t().jailFreeCard}`);
 
+  const buffLabel = player.activeBuff
+    ? getBuffPresentation(player.activeBuff, state.themeId || 'default')
+    : null;
+
   return `
     <div class="player-details">
       <div class="player-detail-stats">
@@ -938,6 +1435,12 @@ function buildPlayerDetailsHtml(player, assets) {
           <span class="player-detail-value">${formatMoney(netWorth)}</span>
         </div>
       </div>
+      ${buffLabel ? `
+      <div class="player-active-buff">
+        <div class="player-active-buff-head">${buffLabel.emoji} Ventaja activa</div>
+        <div class="player-active-buff-name">${escapeHtml(buffLabel.title)}</div>
+        <div class="player-active-buff-meta">${buffLabel.chargesLeft != null ? `${buffLabel.chargesLeft} uso${buffLabel.chargesLeft === 1 ? '' : 's'} · ` : ''}${buffLabel.roundsLeft} ronda${buffLabel.roundsLeft === 1 ? '' : 's'} · ${escapeHtml(buffLabel.description)}</div>
+      </div>` : ''}
       <div class="player-detail-header">
         <span class="player-detail-count">${assets.props.length} propiedad${assets.props.length === 1 ? '' : 'es'}</span>
         ${summaryParts.length ? `<span class="player-detail-tags">${summaryParts.join(' · ')}</span>` : ''}
@@ -976,6 +1479,193 @@ function nextTurn() {
   const alive = activePlayers();
   if (alive.length <= 1) return;
   nextPlayer();
+  state.turnCounter = (state.turnCounter || 0) + 1;
+  maybeTriggerWorldEvent();
+}
+
+function announcePlayerBuffGrant(result) {
+  if (!result) return;
+  addLog(result.message, { skipBoardAction: true });
+  setBoardAction({
+    type: 'playerBuff',
+    tone: result.tone,
+    emoji: result.emoji,
+    title: result.title,
+    message: result.description,
+    playerName: result.playerName,
+  });
+  pulseBoardAction();
+}
+
+function buildPremiumFlipRevealHtml(cellId, buffResult, currentBuff = null) {
+  const cell = BOARD[cellId];
+  const frontHtml = buildPropertyCardHtml(cellId, '', { hidePremiumBuff: true });
+  const rounds = buffResult.roundsLeft ?? 1;
+
+  return `
+    <div class="premium-flip-scene">
+      <div class="premium-flip-card" id="premium-flip-card">
+        <div class="premium-flip-face premium-flip-front">
+          ${frontHtml}
+        </div>
+        <div class="premium-flip-face premium-flip-face-back">
+          <div class="premium-reveal-back">
+            <div class="premium-reveal-back-shine" aria-hidden="true"></div>
+            <p class="premium-reveal-kicker">${currentBuff ? 'Nueva ventaja premium' : 'Ventaja premium revelada'}</p>
+            ${currentBuff ? `
+            <div class="premium-reveal-current">
+              <span class="premium-reveal-current-label">Activa ahora</span>
+              <strong>${currentBuff.emoji} ${escapeHtml(currentBuff.title)}</strong>
+              <span>${escapeHtml(currentBuff.description)}</span>
+            </div>` : ''}
+            <div class="premium-reveal-emoji" aria-hidden="true">${buffResult.emoji}</div>
+            <h3 class="premium-reveal-title">${escapeHtml(buffResult.title)}</h3>
+            <p class="premium-reveal-desc">${escapeHtml(buffResult.description)}</p>
+            <p class="premium-reveal-meta">${escapeHtml(buffResult.playerName || '')}${buffResult.playerName ? ' · ' : ''}${rounds} ronda${rounds === 1 ? '' : 's'}</p>
+            <p class="premium-reveal-cell">${escapeHtml(cell.name)}</p>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function premiumBuffContext(player) {
+  return {
+    goBonus: goBonusAmount(player),
+    formatMoney,
+  };
+}
+
+function handlePremiumBuffAfterPurchase(player, prop, cellId, onComplete) {
+  const themeId = state.themeId || 'default';
+  const buffId = prop?.premiumBuffId;
+  if (!prop?.premium || !buffId) {
+    onComplete?.();
+    return;
+  }
+
+  const context = premiumBuffContext(player);
+  const newPreview = previewBuffGrant(buffId, themeId, context);
+  if (!newPreview) {
+    onComplete?.();
+    return;
+  }
+  newPreview.playerName = player.name;
+
+  if (player.activeBuff && !player.isAI) {
+    const currentLabel = getBuffPresentation(player.activeBuff, themeId, formatMoney(goBonusAmount()));
+    showPremiumBuffChoiceReveal(cellId, player, currentLabel, newPreview, buffId, onComplete);
+    return;
+  }
+
+  if (player.activeBuff && player.isAI) {
+    if (shouldReplaceActiveBuff(player, buffId)) {
+      const result = applyBuffToPlayer(player, buffId, themeId, context);
+      announcePlayerBuffGrant({
+        ...result,
+        message: `${result.emoji} ${player.name} cambia a «${result.title}»: ${result.description}`,
+      });
+    } else {
+      addLog(`${player.name} mantiene su ventaja premium actual.`);
+    }
+    onComplete?.();
+    return;
+  }
+
+  const result = applyBuffToPlayer(player, buffId, themeId, context);
+  showPremiumBuffReveal(cellId, result, onComplete);
+}
+
+function showPremiumBuffChoiceReveal(cellId, player, currentBuff, newPreview, buffId, onComplete) {
+  showBoardCard(
+    buildPremiumFlipRevealHtml(cellId, newPreview, currentBuff),
+    [
+      {
+        label: `Mantener ${currentBuff.emoji} ${currentBuff.title}`,
+        action: () => {
+          addLog(`${player.name} mantiene «${currentBuff.title}».`);
+          closeBoardCard();
+          onComplete?.();
+          saveGame();
+        },
+      },
+      {
+        label: `Cambiar a ${newPreview.emoji} ${newPreview.title}`,
+        action: () => {
+          const result = applyBuffToPlayer(player, buffId, state.themeId || 'default', premiumBuffContext(player));
+          announcePlayerBuffGrant({
+            ...result,
+            message: `${result.emoji} ${player.name} cambia a «${result.title}»: ${result.description}`,
+          });
+          closeBoardCard();
+          onComplete?.();
+          saveGame();
+        },
+        primary: true,
+      },
+    ],
+    cellId,
+  );
+  startPremiumFlipAnimation();
+}
+
+function startPremiumFlipAnimation() {
+  const flip = document.getElementById('premium-flip-card');
+  const actions = $('#board-card-actions');
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  actions?.classList.add('premium-reveal-actions-hidden');
+
+  if (reducedMotion) {
+    flip?.classList.add('is-flipped');
+    actions?.classList.remove('premium-reveal-actions-hidden');
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    setTimeout(() => flip?.classList.add('is-flipped'), 480);
+  });
+  setTimeout(() => actions?.classList.remove('premium-reveal-actions-hidden'), 1600);
+}
+
+function showPremiumBuffReveal(cellId, buffResult, onComplete) {
+  announcePlayerBuffGrant(buffResult);
+  pendingCardReveal = null;
+  pendingPremiumReveal = { onComplete };
+  setBoardAction({
+    type: 'premiumBuff',
+    tone: buffResult.tone || 'good',
+    cellId,
+    buffResult,
+    emoji: buffResult.emoji,
+    title: buffResult.title,
+    message: buffResult.description,
+    playerName: buffResult.playerName,
+  });
+  pulseBoardAction();
+  saveGame();
+  beginCardRevealPause();
+}
+
+function maybeTriggerWorldEvent() {
+  if (!shouldTriggerWorldEvent(state)) return;
+
+  const result = resolveWorldEvent(state, BOARD, state.themeId, formatMoney);
+  if (!result) return;
+
+  state.lastWorldEventTurn = state.turnCounter;
+  addLog(`${result.emoji} ${result.message}`, { skipBoardAction: true });
+  setBoardAction({
+    type: 'worldEvent',
+    tone: result.tone,
+    emoji: result.emoji,
+    title: result.title,
+    message: result.message,
+  });
+  pulseBoardAction();
+  saveGame();
+  render();
+  beginWorldEventPause();
 }
 
 // ─── Movimiento ──────────────────────────────────────────────
@@ -998,7 +1688,7 @@ async function movePlayer(playerId, steps, collectGo = true) {
   }
 
   if (passedGo && collectGo) {
-    const bonus = goBonusAmount();
+    const bonus = goBonusAmount(player);
     player.money += bonus;
     addLog(`${player.name} pasa por ${t().goName} y cobra ${formatMoney(bonus)}.`);
   }
@@ -1018,11 +1708,11 @@ async function moveToPosition(playerId, target, collectGo = true) {
   player.position = target;
 
   if (passedGo && collectGo && target !== 0) {
-    const bonus = goBonusAmount();
+    const bonus = goBonusAmount(player);
     player.money += bonus;
     addLog(`${player.name} pasa por ${t().goName} y cobra ${formatMoney(bonus)}.`);
   } else if (target === 0 && collectGo) {
-    const bonus = goBonusAmount();
+    const bonus = goBonusAmount(player);
     player.money += bonus;
     addLog(`${player.name} llega a ${t().goName} y cobra ${formatMoney(bonus)}.`);
   }
@@ -1123,6 +1813,12 @@ function handlePropertyLanding(playerId, cellId) {
   }
 
   const rent = calcRent(cellId);
+  if (tryConsumeRentShield(player)) {
+    addLog(`${player.name} usa salvo conducto premium: sin alquiler en ${cell.name}.`);
+    state.phase = 'end';
+    render();
+    return;
+  }
   addLog(`${player.name} debe pagar ${formatMoney(rent)} de alquiler por ${cell.name}.`);
   if (!transferMoney(playerId, prop.owner, rent, `alquiler ${cell.name}`)) return;
   checkBankruptcy(playerId, prop.owner);
@@ -1157,15 +1853,21 @@ function drawCard(deckName, playerId) {
 
   sounds.playCard(deckName);
   const player = state.players[playerId];
-  if (player.isAI) {
-    executeCard(card, playerId);
-    return;
-  }
-  showModal(
-    deckName === 'city' ? t().chanceDeckTitle : t().fortuneDeckTitle,
-    `<p>${card.text}</p>`,
-    [{ label: 'Aceptar', action: () => { closeModal(); executeCard(card, playerId); } }],
-  );
+  const deckTitle = deckName === 'city' ? t().chanceDeckTitle : t().fortuneDeckTitle;
+  addLog(`${player.name} — ${deckTitle}: ${card.text}`, { skipBoardAction: true });
+  pendingCardReveal = { card, playerId };
+  setBoardAction({
+    type: 'cardDraw',
+    deckName,
+    tone: getCardRevealTone(card),
+    emoji: leadingEmoji(deckTitle),
+    deckTitle,
+    title: player.name,
+    message: card.text,
+  });
+  pulseBoardAction();
+  saveGame();
+  beginCardRevealPause();
 }
 
 async function executeCard(card, playerId) {
@@ -1191,24 +1893,31 @@ async function executeCard(card, playerId) {
     }
     case 'money':
       if (card.amount > 0) {
-        const income = scaleCardIncome(card.amount);
+        const bonus = getCardMoneyBonus(player);
+        const income = scaleCardIncome(card.amount) + bonus;
         player.money += income;
-        addLog(`${player.name} recibe ${formatMoney(income)}.`);
+        addLog(`${player.name} recibe ${formatMoney(income)}${bonus ? ` (incl. +${formatMoney(bonus)} premium)` : ''}.`);
       } else if (!transferMoney(playerId, null, scaleCardFine(card.amount), 'carta', true)) {
         return;
       }
       state.phase = 'end';
       render();
       break;
-    case 'collectEach':
+    case 'collectEach': {
+      const cardBonus = getCardMoneyBonus(player);
       activePlayers().forEach((p) => {
         if (p.id !== playerId && !p.bankrupt) {
           transferMoney(p.id, playerId, scaleCardIncome(card.amount), 'carta');
         }
       });
+      if (cardBonus) {
+        player.money += cardBonus;
+        addLog(`${player.name} recibe +${formatMoney(cardBonus)} extra por ventaja premium.`);
+      }
       state.phase = 'end';
       render();
       break;
+    }
     case 'payEach': {
       let blocked = false;
       const eachAmount = scaleCardFine(card.amount);
@@ -1265,7 +1974,7 @@ async function executeCard(card, playerId) {
 // ─── Acciones del jugador ────────────────────────────────────
 async function rollDice() {
   const player = currentPlayer();
-  if (state.phase !== 'roll' || player.bankrupt) return;
+  if (state.phase !== 'roll' || player.bankrupt || isGameplayPaused()) return;
 
   closeBoardCard();
   closeModal();
@@ -1305,7 +2014,7 @@ async function rollDice() {
     if (!isActiveRoll(rollId)) return;
     landOnCell(player.id, newPos);
 
-    render();
+    if (!isCardRevealPaused()) render();
   } finally {
     if (rollId === activeRollId) {
       rollingSince = 0;
@@ -1354,7 +2063,7 @@ async function handleJailRoll() {
       addLog(`${player.name} no saca doble (${d1}+${d2}). Turno ${player.jailTurns}/3 en ${t().jailName}.`);
       state.phase = 'end';
     }
-    render();
+    if (!isCardRevealPaused()) render();
   } finally {
     if (rollId === activeRollId) {
       rollingSince = 0;
@@ -1412,7 +2121,8 @@ function buyProperty(cellId) {
   const prop = state.properties[cellId];
   const player = currentPlayer();
 
-  if (player.money < cell.price) {
+  const { price, saved } = resolvePurchasePrice(player, cell.price);
+  if (player.money < price) {
     addLog(`${player.name} no tiene dinero para comprar ${cell.name}.`);
     pendingAction = null;
     state.phase = 'end';
@@ -1421,11 +2131,24 @@ function buyProperty(cellId) {
     return;
   }
 
-  player.money -= cell.price;
+  player.money -= price;
+  if (saved > 0) consumePurchaseDiscount(player);
   prop.owner = player.id;
-  addLog(`${player.name} compra ${cell.name} por ${formatMoney(cell.price)}.`);
+  let logMsg = `${player.name} compra ${cell.name} por ${formatMoney(price)}`;
+  if (saved > 0) logMsg += ` (−${formatMoney(saved)} premium)`;
+  logMsg += '.';
+  addLog(logMsg);
   pendingAction = null;
   state.phase = 'end';
+
+  if (prop.premium && prop.premiumBuffId) {
+    handlePremiumBuffAfterPurchase(player, prop, cellId, () => {
+      closeBoardCard();
+      render();
+    });
+    return;
+  }
+
   closeBoardCard();
   render();
 }
@@ -1465,7 +2188,7 @@ function advanceAuctionTurn() {
     }
 
     if (bidder.isAI) {
-      const decision = decideAuctionBid(auction, bidder, state, state.difficultyId, BOARD, RENT_TABLES);
+      const decision = decideAuctionBid(auction, bidder, state, aiDifficultyFor(bidder), BOARD, RENT_TABLES);
       if (decision.pass) {
         passBid(auction, bidder.id);
       } else {
@@ -1557,17 +2280,31 @@ function finishAuction() {
 
   if (result.sold) {
     const winner = result.winner;
-    winner.money -= result.amount;
+    const { price, saved } = resolvePurchasePrice(winner, result.amount);
+    winner.money -= price;
+    if (saved > 0) consumePurchaseDiscount(winner);
     prop.owner = winner.id;
-    addLog(`🔨 ${winner.name} gana ${result.cell.name} por ${formatMoney(result.amount)}.`);
+    let logMsg = `🔨 ${winner.name} gana ${result.cell.name} por ${formatMoney(price)}`;
+    if (saved > 0) logMsg += ` (−${formatMoney(saved)} premium)`;
+    logMsg += '.';
+    addLog(logMsg);
+    state.auction = null;
+    state.phase = 'end';
+    closeModal();
+
+    if (prop.premium && prop.premiumBuffId) {
+      handlePremiumBuffAfterPurchase(winner, prop, auction.cellId, () => render());
+      return;
+    }
+
+    render();
   } else {
     addLog(`🔨 Nadie compró ${result.cell.name}. Sigue en venta.`);
+    state.auction = null;
+    state.phase = 'end';
+    closeModal();
+    render();
   }
-
-  state.auction = null;
-  state.phase = 'end';
-  closeModal();
-  render();
 }
 
 // ─── Intercambios ────────────────────────────────────────────
@@ -1718,7 +2455,7 @@ function respondToTradeFromAI() {
   const offer = tradeDraft;
   const from = state.players[offer.fromId];
   const to = state.players[offer.toId];
-  if (shouldAcceptTrade(offer, state, state.difficultyId, BOARD, RENT_TABLES)) {
+  if (shouldAcceptTrade(offer, state, aiDifficultyFor(to), BOARD, RENT_TABLES)) {
     executeTrade(state, state.players, offer, formatMoney, addLog);
     handleMortgagedTradeProps(offer);
   } else {
@@ -1781,7 +2518,7 @@ function tryAITradeProposal(player) {
   const opponents = activePlayers()
     .filter((p) => p.id !== player.id)
     .map((p) => p.id);
-  const offer = proposeAITrade(state, player.id, opponents, state.difficultyId, BOARD, RENT_TABLES);
+  const offer = proposeAITrade(state, player.id, opponents, aiDifficultyFor(player), BOARD, RENT_TABLES);
   if (!offer) return 'none';
 
   const err = validateTrade(state, state.players, offer);
@@ -1789,7 +2526,7 @@ function tryAITradeProposal(player) {
 
   const to = state.players[offer.toId];
   if (to.isAI) {
-    if (shouldAcceptTrade(offer, state, state.difficultyId, BOARD, RENT_TABLES)) {
+    if (shouldAcceptTrade(offer, state, aiDifficultyFor(to), BOARD, RENT_TABLES)) {
       addLog(`🤝 ${player.name} propone un trato a ${to.name}.`);
       executeTrade(state, state.players, offer, formatMoney, addLog);
       handleMortgagedTradeProps(offer);
@@ -1835,9 +2572,10 @@ function aiUnmortgageProperties(playerId) {
 }
 
 function aiBuildHouses(playerId) {
+  const player = state.players[playerId];
   let safety = 0;
   while (safety++ < 12) {
-    const target = pickBuildTarget(state, playerId, BOARD, HOUSE_COST, ownsFullGroup, getGroupCells);
+    const target = pickBuildTarget(state, playerId, BOARD, houseCostTableFor(player), ownsFullGroup, getGroupCells);
     if (target == null) break;
     buildHouse(target);
   }
@@ -1873,6 +2611,7 @@ async function aiRaiseFunds(playerId) {
 
 async function runAITurn() {
   if (aiTurnRunning || !state || state.winner) return;
+  if (isGameplayPaused()) return;
 
   const player = currentPlayer();
   if (!player?.isAI || player.bankrupt) return;
@@ -1885,7 +2624,7 @@ async function runAITurn() {
     if (state.phase === 'buy' && pendingAction?.type === 'buy') {
       closeBoardCard();
       const cellId = pendingAction.cellId;
-      if (shouldBuyProperty(cellId, state, player.id, state.difficultyId, BOARD, RENT_TABLES)) {
+      if (shouldBuyProperty(cellId, state, player.id, aiDifficultyFor(player), BOARD, RENT_TABLES)) {
         buyProperty(cellId);
       } else {
         declineProperty();
@@ -1900,7 +2639,7 @@ async function runAITurn() {
 
     if (state.phase === 'roll' && player.isAI) {
       if (player.inJail) {
-        const jailChoice = decideJailAction(player, state.difficultyId, jailBailAmount());
+        const jailChoice = decideJailAction(player, aiDifficultyFor(player), jailBailAmount());
         if (jailChoice === 'bail' && player.money >= jailBailAmount()) {
           aiPayJailBail(player);
           render();
@@ -1917,6 +2656,7 @@ async function runAITurn() {
     }
 
     if ((state.phase === 'end' || state.phase === 'build') && player.isAI) {
+      if (isCardRevealPaused()) return;
       closeBoardCard();
       aiUnmortgageProperties(player.id);
       aiBuildHouses(player.id);
@@ -1964,7 +2704,7 @@ function buildHouse(cellId) {
   const cell = BOARD[cellId];
   const prop = state.properties[cellId];
   const player = currentPlayer();
-  const cost = HOUSE_COST[cell.group];
+  const cost = houseCostForPlayer(cell.group, player);
 
   if (!ownsFullGroup(player.id, cell.group)) return;
 
@@ -2069,6 +2809,7 @@ function toggleMortgage(cellId) {
 
 function endTurn() {
   if (state.doublesCount > 0 && !currentPlayer().inJail) return;
+  tickPlayerBuffs(currentPlayer());
   closeBoardCard();
   nextTurn();
 }
@@ -2094,8 +2835,8 @@ function tryContinueDoubleTurn() {
 }
 
 // ─── Modales ─────────────────────────────────────────────────
-function showBoardCard(body, buttons) {
-  activeBoardCard = { body, buttons };
+function showBoardCard(body, buttons, cellId = null) {
+  activeBoardCard = { body, buttons, cellId };
   paintBoardCard();
 }
 
@@ -2112,7 +2853,15 @@ function paintBoardCard() {
   card.classList.remove('hidden');
   content.innerHTML = activeBoardCard.body;
   bindPropertyCardArtInteractions(content);
+  if (!content.querySelector('.premium-flip-scene')) {
+    const premiumCard = content.querySelector('.property-card--premium');
+    const sheenTarget = premiumCard?.querySelector('.property-card-premium-wrap') || premiumCard;
+    if (sheenTarget && activeBoardCard.cellId != null) {
+      applyPremiumSheenStyle(sheenTarget, activeBoardCard.cellId);
+    }
+  }
   actions.innerHTML = '';
+  actions.classList.remove('premium-reveal-actions-hidden');
   activeBoardCard.buttons.forEach((btn) => {
     const el = document.createElement('button');
     el.className = 'btn' + (btn.primary ? ' btn-primary' : '');
@@ -2292,7 +3041,20 @@ function initPropertyArtLightbox() {
   });
 }
 
-function buildThemedArtStatsRows(cellId) {
+function buildPremiumBonusRow(cellId) {
+  const prop = state.properties[cellId];
+  if (!prop?.premium || !prop.premiumBuffId) return '';
+
+  if (prop.owner === null) {
+    return `<div class="property-card-row property-card-row--premium property-card-row--premium-mystery"><span>⭐ Casilla premium</span><strong>Ventaja sorpresa al comprar</strong></div>`;
+  }
+
+  const preview = getPremiumBuffPreview(prop.premiumBuffId, state.themeId || 'default', formatMoney(goBonusAmount()));
+  if (!preview) return '';
+  return `<div class="property-card-row property-card-row--premium"><span>${preview.emoji} Ventaja premium</span><strong>${preview.title} — ${preview.description}</strong></div>`;
+}
+
+function buildThemedArtStatsRows(cellId, { hidePremiumBuff = false } = {}) {
   const cell = BOARD[cellId];
   const prop = state.properties[cellId];
   const owner = prop.owner !== null ? state.players[prop.owner] : null;
@@ -2332,6 +3094,7 @@ function buildThemedArtStatsRows(cellId) {
   if (prop.owner !== null && !prop.mortgaged && isOwnableCell(cell)) {
     statsRows += `<div class="property-card-row highlight"><span>Alquiler actual</span><strong>${formatMoney(calcRent(cellId))}</strong></div>`;
   }
+  if (!hidePremiumBuff) statsRows += buildPremiumBonusRow(cellId);
 
   return statsRows;
 }
@@ -2341,12 +3104,18 @@ function hasPropertyCardDetails(statsRows, extra = '') {
   return extra.replace(/<[^>]+>/g, '').trim().length > 0;
 }
 
-function buildPropertyCardHtml(cellId, extra = '') {
+function buildPropertyCardHtml(cellId, extra = '', options = {}) {
+  const { hidePremiumBuff = false } = options;
   const cell = BOARD[cellId];
   const prop = state.properties[cellId];
   const owner = prop.owner !== null ? state.players[prop.owner] : null;
   const color = cell.color ? COLORS[cell.color] : null;
   const accent = color?.bg || '#555';
+  const isPremium = isPremiumUnowned(prop);
+  const premiumClass = isPremium ? ' property-card--premium' : '';
+  const premiumFx = isPremium
+    ? '<span class="property-card-premium-fx" aria-hidden="true"><span class="cell-premium-glow"></span><span class="cell-premium-sheen"></span></span>'
+    : '';
 
   let rows = '';
   if (cell.price) rows += `<div class="property-card-row"><span>Precio</span><strong>${formatMoney(cell.price)}</strong></div>`;
@@ -2369,30 +3138,37 @@ function buildPropertyCardHtml(cellId, extra = '') {
   if (prop.owner !== null && !prop.mortgaged && isOwnableCell(cell)) {
     rows += `<div class="property-card-row highlight"><span>Alquiler actual</span><strong>${formatMoney(calcRent(cellId))}</strong></div>`;
   }
+  if (!hidePremiumBuff) rows += buildPremiumBonusRow(cellId);
 
   const artUrl = getCellArtUrl(THEME, cellId, currentBoardSize, cell.name);
 
   if (artUrl) {
-    const statsRows = buildThemedArtStatsRows(cellId);
+    const statsRows = buildThemedArtStatsRows(cellId, { hidePremiumBuff });
     const detailsBlock = hasPropertyCardDetails(statsRows, extra)
       ? `<div class="property-card-details property-card-details--art">
           <div class="property-card-body">${statsRows}${extra}</div>
         </div>`
       : '';
 
-    return `
-      <div class="property-card property-card--themed-art" style="--card-color:${accent}">
+    const innerContent = `
         <button type="button" class="property-card-art-btn" data-art-url="${artUrl}" aria-label="Ampliar ilustración de ${escapeHtml(cell.name)}">
           <img class="property-card-art" src="${artUrl}" alt="${escapeHtml(cell.name)}" loading="lazy" />
           <span class="property-card-art-zoom-hint"><i class="fa-solid fa-magnifying-glass-plus" aria-hidden="true"></i> Ampliar</span>
         </button>
-        ${detailsBlock}
+        ${detailsBlock}`;
+
+    return `
+      <div class="property-card property-card--themed-art${premiumClass}" style="--card-color:${accent}">
+        ${isPremium
+    ? `<div class="property-card-premium-wrap">${premiumFx}${innerContent}</div>`
+    : innerContent}
       </div>
     `;
   }
 
   return `
-    <div class="property-card" style="--card-color:${accent}">
+    <div class="property-card${premiumClass}" style="--card-color:${accent}">
+      ${premiumFx}
       <div class="property-card-band" style="background:${accent}"></div>
       <div class="property-card-name">${cell.name}</div>
       ${color ? `<div class="property-card-group">${color.name}</div>` : ''}
@@ -2436,6 +3212,7 @@ function showBuyModal(cellId) {
       { label: `Comprar (${formatMoney(cell.price)})`, action: () => buyProperty(cellId), primary: true },
       { label: 'Subastar', action: () => declineProperty() },
     ],
+    cellId,
   );
 }
 
@@ -2694,7 +3471,8 @@ function buildOwnerBuildingsHtml(count, edge) {
 
 function renderOwnerMarkerLayer(board, positions) {
   const layer = document.createElement('div');
-  layer.className = 'owner-layer';
+  const useOwnerGlow = (state.themeId || 'default') === 'lotr';
+  layer.className = `owner-layer${useOwnerGlow ? ' owner-layer--glow' : ''}`;
   layer.id = 'owner-layer';
 
   BOARD.forEach((cell, i) => {
@@ -2715,8 +3493,14 @@ function renderOwnerMarkerLayer(board, positions) {
     wrap.className = `owner-marker-wrap owner-marker-wrap--${edge}`;
 
     const marker = document.createElement('div');
-    marker.className = `owner-marker owner-marker--${edge}`;
-    marker.style.setProperty('--owner-color', owner.color);
+    if (useOwnerGlow) {
+      const trimClasses = getOwnerMarkerTrimClasses(pos, edge, positions).join(' ');
+      marker.className = `owner-marker owner-marker--${edge}${trimClasses ? ` ${trimClasses}` : ''}`;
+      applyOwnerGlowStyle(marker, owner.color);
+    } else {
+      marker.className = `owner-marker owner-marker--${edge}`;
+      marker.style.setProperty('--owner-color', owner.color);
+    }
     marker.title = owner.name;
     wrap.appendChild(marker);
 
@@ -2738,6 +3522,50 @@ function getCellOwnerEdge(pos) {
   if (pos.row === 1) return 'bottom';
   if (pos.col === G) return 'left';
   return 'top';
+}
+
+function isOwnedBoardCellAt(pos, positions) {
+  const idx = positions.findIndex((p) => p.row === pos.row && p.col === pos.col);
+  if (idx < 0) return false;
+  if (!isOwnableCell(BOARD[idx])) return false;
+  return state.properties[idx].owner !== null;
+}
+
+function getOwnerMarkerTrimClasses(pos, edge, positions) {
+  const G = BOARD_GRID;
+  const classes = [];
+
+  if (edge === 'top') {
+    if (pos.col === G && isOwnedBoardCellAt({ row: G - 1, col: G }, positions)) {
+      classes.push('owner-marker-trim-start');
+    }
+    if (pos.col === 1 && isOwnedBoardCellAt({ row: G - 1, col: 1 }, positions)) {
+      classes.push('owner-marker-trim-end');
+    }
+  } else if (edge === 'right') {
+    if (pos.row === G - 1 && isOwnedBoardCellAt({ row: G, col: 1 }, positions)) {
+      classes.push('owner-marker-trim-start');
+    }
+    if (pos.row === 2 && isOwnedBoardCellAt({ row: 1, col: 1 }, positions)) {
+      classes.push('owner-marker-trim-end');
+    }
+  } else if (edge === 'bottom') {
+    if (pos.col === 1 && isOwnedBoardCellAt({ row: 2, col: 1 }, positions)) {
+      classes.push('owner-marker-trim-start');
+    }
+    if (pos.col === G && isOwnedBoardCellAt({ row: 2, col: G }, positions)) {
+      classes.push('owner-marker-trim-end');
+    }
+  } else if (edge === 'left') {
+    if (pos.row === 2 && isOwnedBoardCellAt({ row: 1, col: G }, positions)) {
+      classes.push('owner-marker-trim-start');
+    }
+    if (pos.row === G - 1 && isOwnedBoardCellAt({ row: G, col: G }, positions)) {
+      classes.push('owner-marker-trim-end');
+    }
+  }
+
+  return classes;
 }
 
 function getDiceResultText() {
@@ -2769,6 +3597,36 @@ function mountDiceResult(center, savedResult = null) {
   return result;
 }
 
+function premiumSheenRandom(cellId, slot = 0) {
+  const x = Math.sin(cellId * 12.9898 + slot * 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function applyPremiumSheenStyle(cellEl, cellId) {
+  const r = (slot) => premiumSheenRandom(cellId, slot);
+  cellEl.style.setProperty('--premium-sheen-duration', `${(2.6 + r(1) * 1.6).toFixed(2)}s`);
+  cellEl.style.setProperty('--premium-sheen-delay', `${(r(2) * 2.5).toFixed(2)}s`);
+  cellEl.style.setProperty('--premium-glow-duration', `${(4 + r(3) * 3).toFixed(2)}s`);
+  cellEl.style.setProperty('--premium-glow-delay', `${(r(4) * 2.5).toFixed(2)}s`);
+}
+
+function hexWithAlpha(hex, alpha) {
+  const a = Math.round(Math.max(0, Math.min(1, alpha)) * 255).toString(16).padStart(2, '0');
+  const raw = hex.replace('#', '');
+  if (raw.length === 3) {
+    return `#${raw[0]}${raw[0]}${raw[1]}${raw[1]}${raw[2]}${raw[2]}${a}`;
+  }
+  return `#${raw.slice(0, 6)}${a}`;
+}
+
+function applyOwnerGlowStyle(el, color) {
+  el.style.setProperty('--owner-glow-color', color);
+  el.style.setProperty('--owner-glow-bright', hexWithAlpha(color, 0.82));
+  el.style.setProperty('--owner-glow-mid', hexWithAlpha(color, 0.42));
+  el.style.setProperty('--owner-glow-soft', hexWithAlpha(color, 0.16));
+  el.style.setProperty('--owner-glow-fade', hexWithAlpha(color, 0));
+}
+
 function renderBoard() {
   const board = $('#board');
   const savedOverlay = document.getElementById('dice-overlay');
@@ -2790,6 +3648,7 @@ function renderBoard() {
     const ownable = isOwnableCell(cell);
     const el = document.createElement('div');
     el.className = `cell cell-${cell.type}${cell.color ? ` cell-color-${cell.color}` : ''}`;
+    el.dataset.cellId = String(i);
     el.style.gridRow = pos.row;
     el.style.gridColumn = pos.col;
 
@@ -2803,6 +3662,12 @@ function renderBoard() {
       el.setAttribute('aria-label', cell.name);
     }
 
+    if (isPremiumUnowned(prop)) {
+      el.classList.add('cell-premium');
+      applyPremiumSheenStyle(el, i);
+      if (artUrl) el.setAttribute('aria-label', `${cell.name} — casilla premium con ventaja sorpresa`);
+    }
+
     el.innerHTML = `
       ${artUrl ? `<img class="cell-art" src="${artUrl}" alt="" loading="lazy" aria-hidden="true" />` : ''}
       ${!artUrl && ownable ? '<div class="cell-color-bar"></div>' : ''}
@@ -2810,6 +3675,7 @@ function renderBoard() {
       ${!artUrl && ownable && cell.price ? `<div class="cell-price">${formatMoney(cell.price)}</div>` : ''}
       ${!artUrl && cell.type === 'go' ? `<div class="cell-desc">+${formatMoney(goBonusAmount())}</div>` : ''}
       ${!artUrl && cell.type === 'tax' ? `<div class="cell-desc">${formatMoney(scaleTax(cell.amount))}</div>` : ''}
+      ${isPremiumUnowned(prop) ? '<span class="cell-premium-fx" aria-hidden="true"><span class="cell-premium-glow"></span><span class="cell-premium-sheen"></span></span>' : ''}
       ${ownable && prop.mortgaged ? '<div class="mortgaged">HIP</div>' : ''}
     `;
 
@@ -2833,6 +3699,40 @@ function renderBoard() {
           <div class="board-actions" id="board-actions"></div>
         </div>
       </div>
+    </div>
+    <div class="world-event-overlay hidden" id="world-event-overlay" role="alertdialog" aria-modal="true" aria-labelledby="world-event-overlay-title">
+      <div class="world-event-overlay-backdrop" aria-hidden="true"></div>
+      <article class="world-event-overlay-panel world-event-overlay-card" id="world-event-overlay-flat">
+        <div class="world-event-overlay-body">
+          <span class="world-event-overlay-emoji" aria-hidden="true"></span>
+          <span class="world-event-overlay-kicker">Evento del mundo</span>
+          <h3 class="world-event-overlay-title" id="world-event-overlay-title"></h3>
+          <p class="world-event-overlay-message"></p>
+        </div>
+        <footer class="center-pause-footer">
+          <div class="world-event-overlay-timer">
+            <div class="world-event-overlay-progress-track" aria-hidden="true">
+              <div class="world-event-overlay-progress"></div>
+            </div>
+            <span class="world-event-overlay-countdown"></span>
+          </div>
+          <button type="button" class="btn btn-primary world-event-overlay-dismiss">Continuar</button>
+        </footer>
+      </article>
+      <article class="world-event-overlay-panel world-event-overlay-card hidden" id="world-event-overlay-flip">
+        <div class="center-pause-flip-stage">
+          <div id="center-pause-flip-root"></div>
+        </div>
+        <footer class="center-pause-footer">
+          <div class="world-event-overlay-timer center-pause-controls center-pause-controls-hidden">
+            <div class="world-event-overlay-progress-track" aria-hidden="true">
+              <div class="world-event-overlay-progress" id="center-pause-progress"></div>
+            </div>
+            <span class="world-event-overlay-countdown" id="center-pause-countdown">Revelando carta…</span>
+          </div>
+          <button type="button" class="btn btn-primary world-event-overlay-dismiss center-pause-controls center-pause-controls-hidden" id="center-pause-dismiss">Continuar</button>
+        </footer>
+      </article>
     </div>
     <div class="board-card hidden" id="board-card">
       <div class="board-card-content" id="board-card-content"></div>
@@ -2890,7 +3790,7 @@ function showCellInfo(cellId) {
     });
   }
 
-  showBoardCard(buildPropertyCardHtml(cellId, extra), buttons);
+  showBoardCard(buildPropertyCardHtml(cellId, extra), buttons, cellId);
 }
 
 function renderPlayers() {
@@ -2902,6 +3802,9 @@ function renderPlayers() {
     const isExpanded = expandedPlayerId === player.id;
     const assets = getPlayerAssets(player.id);
     const netWorth = player.money + assets.total;
+    const buffLabel = player.activeBuff
+      ? getBuffPresentation(player.activeBuff, state.themeId || 'default')
+      : null;
     const el = document.createElement('div');
     el.className = `player-card player-card-clickable${isCurrent ? ' active' : ''}${isExpanded ? ' expanded' : ''}${player.bankrupt ? ' bankrupt' : ''}`;
     el.innerHTML = `
@@ -2911,7 +3814,8 @@ function renderPlayers() {
         <div class="player-header-main">
           <span class="player-name">${player.name}</span>
           <div class="player-header-tags">
-            ${player.isAI ? '<span class="ai-tag">IA</span>' : ''}
+            ${player.isAI ? `<span class="ai-tag">IA · ${getDifficultyPreset(aiDifficultyFor(player)).name}</span>` : ''}
+            ${buffLabel ? `<span class="player-buff-tag" title="${escapeHtml(buffLabel.description)}">${formatBuffTagLabel(buffLabel)}</span>` : ''}
           </div>
         </div>
         <span class="player-expand-icon" aria-hidden="true"><i class="fa-solid fa-chevron-${isExpanded ? 'up' : 'down'}"></i></span>
@@ -3078,6 +3982,24 @@ function createPropertiesPanelMessage(title, detail, variant = 'idle') {
 }
 
 function renderPropertiesPanelIdleMessage(container, player) {
+  if (isWorldEventPaused()) {
+    container.appendChild(createPropertiesPanelMessage(
+      'Evento del mundo',
+      'El tablero está en pausa unos segundos.',
+      'phase',
+    ));
+    return;
+  }
+
+  if (isCardRevealPaused()) {
+    container.appendChild(createPropertiesPanelMessage(
+      lastBoardAction?.type === 'premiumBuff' ? 'Ventaja premium' : 'Carta especial',
+      'El tablero está en pausa unos segundos.',
+      'phase',
+    ));
+    return;
+  }
+
   if (player.isAI) {
     container.appendChild(createPropertiesPanelMessage(
       `${player.name} está jugando`,
@@ -3168,6 +4090,13 @@ function renderLog() {
 
 function render() {
   renderBoard();
+  if (isWorldEventPaused() && lastBoardAction?.type === 'worldEvent') {
+    paintCenterPauseOverlay(lastBoardAction);
+    paintBoardAction();
+  } else if (isCardRevealPaused() && (lastBoardAction?.type === 'cardDraw' || lastBoardAction?.type === 'premiumBuff')) {
+    paintCenterPauseOverlay(lastBoardAction);
+    paintBoardAction();
+  }
   renderPlayers();
   tryContinueDoubleTurn();
   renderActions();
@@ -3197,6 +4126,10 @@ function unpackSaveData(data) {
   const loadedState = data.state;
   loadedState.difficultyId = loadedState.difficultyId || 'normal';
   loadedState.boardSize = loadedState.boardSize || 'classic';
+  loadedState.worldEventsEnabled = loadedState.worldEventsEnabled !== false;
+  loadedState.worldEventsMode = loadedState.worldEventsMode === 'random' ? 'random' : 'interval';
+  loadedState.turnCounter = loadedState.turnCounter || 0;
+  loadedState.lastWorldEventTurn = loadedState.lastWorldEventTurn || 0;
   if (loadedState.auction?.passed) {
     loadedState.auction.passed = new Set(loadedState.auction.passed);
   }
@@ -3206,7 +4139,18 @@ function unpackSaveData(data) {
     player.token = PLAYER_TOKENS.find((t) => t.id === tokenId) || PLAYER_TOKENS[player.id] || PLAYER_TOKENS[0];
     player.id = player.id ?? loadedState.players.indexOf(player);
     player.isAI = !!player.isAI;
+    normalizePlayerBuff(player);
+    if (player.isAI) {
+      player.aiDifficultyId = player.aiDifficultyId || loadedState.difficultyId || 'normal';
+    } else {
+      player.aiDifficultyId = null;
+    }
   });
+
+  loadedState.properties?.forEach((prop) => {
+    prop.premium = !!prop.premium;
+  });
+  ensurePremiumBuffIds(loadedState.properties);
 
   return {
     state: loadedState,
@@ -3516,6 +4460,9 @@ function startGame() {
       name: $(`#player-name-${i}`).value,
       token,
       isAI: $(`#player-ai-${i}`)?.checked ?? false,
+      aiDifficultyId: $(`#player-ai-${i}`)?.checked
+        ? ($(`#player-ai-difficulty-${i}`)?.value || getSetupGameDifficulty())
+        : null,
     });
   }
 
@@ -3525,7 +4472,14 @@ function startGame() {
   $('#log-panel')?.classList.add('side-panel--log-collapsed');
   $('#log-panel-toggle')?.setAttribute('aria-expanded', 'false');
   const boardSize = getSetupBoardSize();
-  state = createInitialState(playerConfigs, themeId, difficultyId, boardSize);
+  state = createInitialState(playerConfigs, themeId, difficultyId, boardSize, {
+    worldEventsEnabled: $('#world-events-enabled')?.checked ?? true,
+    worldEventsMode: document.querySelector('input[name="world-events-mode"]:checked')?.value || 'interval',
+  });
+  const premiumCount = state.properties.filter((prop) => prop.premium).length;
+  if (premiumCount > 0) {
+    state.log.unshift(`⭐ ${premiumCount} casillas premium en el tablero (brillo dorado): cada una otorga una ventaja sorpresa al comprarla.`);
+  }
   $('#setup-screen').classList.add('hidden');
   $('#game-screen').classList.remove('hidden');
   render();
@@ -3584,7 +4538,7 @@ function renderThemePicker() {
       if (input.checked) {
         applyTheme(input.value, getSetupBoardSize());
         setupTokenIds = [];
-        refreshSetupPlayers?.();
+        refreshSetupPlayers?.({ useThemeDefaults: true });
       }
     });
   });
@@ -3600,17 +4554,59 @@ function initBoardSizePicker() {
   });
 }
 
+function getSetupThemeId() {
+  return document.querySelector('input[name="game-theme"]:checked')?.value || 'default';
+}
+
 function initSetup() {
   initPropertyArtLightbox();
   const countSelect = $('#player-count');
   const namesContainer = $('#player-names');
 
-  function updateNameInputs() {
+  function resolvePlayerName(themeId, index, savedNames, useThemeDefaults) {
+    if (useThemeDefaults) {
+      return getThemeDefaultPlayerName(themeId, index);
+    }
+    if (savedNames[index] !== undefined && savedNames[index] !== '') {
+      return savedNames[index];
+    }
+    return getThemeDefaultPlayerName(themeId, index);
+  }
+
+  function buildAIDifficultyOptions(selectedId, globalDefault) {
+    const selected = selectedId || globalDefault;
+    return DIFFICULTY_LIST.map((preset) =>
+      `<option value="${preset.id}"${preset.id === selected ? ' selected' : ''}>${preset.name}</option>`,
+    ).join('');
+  }
+
+  function syncAiDifficultyRow(row, isAi) {
+    row?.classList.toggle('is-ai', isAi);
+    const wrap = row?.querySelector('.ai-difficulty-wrap');
+    const select = row?.querySelector('.player-ai-difficulty');
+    wrap?.classList.toggle('hidden', !isAi);
+    if (select) select.disabled = !isAi;
+  }
+
+  function updateNameInputs(options = {}) {
+    const { useThemeDefaults = false } = options;
+    const themeId = getSetupThemeId();
+    const gameDifficulty = getSetupGameDifficulty();
     const count = parseInt(countSelect.value);
     const savedNames = {};
+    const savedAiDifficulties = {};
+    const savedAiFlags = {};
     namesContainer.querySelectorAll('[id^="player-name-"]').forEach((input) => {
       const idx = parseInt(input.id.replace('player-name-', ''), 10);
       if (!Number.isNaN(idx)) savedNames[idx] = input.value;
+    });
+    namesContainer.querySelectorAll('[id^="player-ai-difficulty-"]').forEach((select) => {
+      const idx = parseInt(select.id.replace('player-ai-difficulty-', ''), 10);
+      if (!Number.isNaN(idx)) savedAiDifficulties[idx] = select.value;
+    });
+    namesContainer.querySelectorAll('.player-ai-toggle').forEach((input) => {
+      const idx = parseInt(input.id.replace('player-ai-', ''), 10);
+      if (!Number.isNaN(idx)) savedAiFlags[idx] = input.checked;
     });
 
     setupTokenIds = reconcileSetupTokens(count, setupTokenIds.length ? setupTokenIds : getDefaultTokenIds(count));
@@ -3618,7 +4614,9 @@ function initSetup() {
 
     for (let i = 0; i < count; i++) {
       const token = PLAYER_TOKENS.find((t) => t.id === setupTokenIds[i]) || PLAYER_TOKENS[i];
-      const defaultAI = i > 0;
+      const defaultAI = savedAiFlags[i] !== undefined ? savedAiFlags[i] : i > 0;
+      const playerName = resolvePlayerName(themeId, i, savedNames, useThemeDefaults);
+      const aiDifficulty = savedAiDifficulties[i] || gameDifficulty;
       namesContainer.innerHTML += `
         <div class="name-input${defaultAI ? ' is-ai' : ''}">
           <div class="name-input-row">
@@ -3631,12 +4629,18 @@ function initSetup() {
             <div class="name-input-fields">
               <label for="player-name-${i}">Jugador ${i + 1}</label>
               <input type="text" id="player-name-${i}" placeholder="Nombre" maxlength="12"
-                value="${savedNames[i] || ''}"
+                value="${playerName.replace(/"/g, '&quot;')}"
                 style="border-color: ${PLAYER_COLORS[i]}">
               <label class="ai-toggle">
                 <input type="checkbox" id="player-ai-${i}" class="player-ai-toggle" ${defaultAI ? 'checked' : ''}>
                 <span><i class="fa-solid fa-robot" aria-hidden="true"></i> Computadora (IA)</span>
               </label>
+              <div class="ai-difficulty-wrap${defaultAI ? '' : ' hidden'}">
+                <label class="ai-difficulty-label" for="player-ai-difficulty-${i}">Nivel IA</label>
+                <select id="player-ai-difficulty-${i}" class="player-ai-difficulty"${defaultAI ? '' : ' disabled'}>
+                  ${buildAIDifficultyOptions(aiDifficulty, gameDifficulty)}
+                </select>
+              </div>
             </div>
           </div>
         </div>`;
@@ -3647,9 +4651,9 @@ function initSetup() {
         const idx = parseInt(input.id.replace('player-ai-', ''), 10);
         const nameInput = $(`#player-name-${idx}`);
         const row = input.closest('.name-input');
-        row?.classList.toggle('is-ai', input.checked);
+        syncAiDifficultyRow(row, input.checked);
         if (input.checked && !nameInput.value.trim()) {
-          nameInput.value = defaultAIName(idx);
+          nameInput.value = getThemeDefaultPlayerName(getSetupThemeId(), idx) || defaultAIName(idx);
         }
       });
     });
@@ -3661,12 +4665,12 @@ function initSetup() {
     });
   }
 
-  countSelect.addEventListener('change', updateNameInputs);
-  refreshSetupPlayers = updateNameInputs;
+  countSelect.addEventListener('change', () => updateNameInputs());
+  refreshSetupPlayers = (options) => updateNameInputs(options);
   renderThemePicker();
   renderDifficultyPicker();
   initBoardSizePicker();
-  updateNameInputs();
+  updateNameInputs({ useThemeDefaults: true });
   updateResumeSection();
 
   $('#start-btn').addEventListener('click', () => {
@@ -3690,7 +4694,21 @@ function initSetup() {
     }
   });
 
+  initWorldEventsSetup();
   initGameSettings();
+}
+
+function initWorldEventsSetup() {
+  const toggle = $('#world-events-enabled');
+  const options = $('#world-events-options');
+
+  function syncWorldEventsOptions() {
+    const enabled = toggle?.checked ?? true;
+    options?.classList.toggle('is-disabled', !enabled);
+  }
+
+  toggle?.addEventListener('change', syncWorldEventsOptions);
+  syncWorldEventsOptions();
 }
 
 // ─── Init ────────────────────────────────────────────────────

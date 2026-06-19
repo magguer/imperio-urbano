@@ -59,6 +59,13 @@ export function getAISkill(difficultyId) {
   return AI_SKILL[difficultyId] || AI_SKILL.normal;
 }
 
+export function resolveAIDifficulty(state, playerOrId) {
+  const player = typeof playerOrId === 'number'
+    ? state.players[playerOrId]
+    : playerOrId;
+  return player?.aiDifficultyId || state?.difficultyId || 'normal';
+}
+
 function randomNoise(skill) {
   if (!skill.noise) return 0;
   return (Math.random() - 0.5) * skill.noise * 40;
@@ -135,7 +142,7 @@ function getCashReserve(skill, player, state, playerId) {
   return skill.cashReserve;
 }
 
-export function scoreProperty(cellId, state, playerId, board, rentTables, skill = getAISkill(state.difficultyId)) {
+export function scoreProperty(cellId, state, playerId, board, rentTables, skill = getAISkill(resolveAIDifficulty(state, playerId))) {
   const cell = board[cellId];
   const player = state.players[playerId];
   if (!cell?.price) return 0;
@@ -193,6 +200,10 @@ export function scoreProperty(cellId, state, playerId, board, rentTables, skill 
   if (cell.price <= 120 && cashAfter >= reserve) score += 6;
   if (cell.price <= 80 && cashAfter >= reserve) score += 5;
 
+  if (state.properties[cellId]?.premium && state.properties[cellId].owner === null) {
+    score += 20;
+  }
+
   return score;
 }
 
@@ -222,9 +233,9 @@ export function shouldBuyProperty(cellId, state, playerId, difficultyId, board, 
   return false;
 }
 
-export function estimateFairPrice(cellId, state, playerId, board, rentTables) {
+export function estimateFairPrice(cellId, state, playerId, board, rentTables, difficultyId = resolveAIDifficulty(state, playerId)) {
   const cell = board[cellId];
-  const skill = getAISkill(state.difficultyId);
+  const skill = getAISkill(difficultyId);
   const score = scoreProperty(cellId, state, playerId, board, rentTables, skill);
   const ratio = Math.min(1.25, Math.max(0.45, score / 62));
   return Math.max(1, Math.floor(cell.price * ratio));
@@ -232,7 +243,7 @@ export function estimateFairPrice(cellId, state, playerId, board, rentTables) {
 
 export function decideAuctionBid(auction, bidder, state, difficultyId, board, rentTables) {
   const skill = getAISkill(difficultyId);
-  const fair = estimateFairPrice(auction.cellId, state, bidder.id, board, rentTables);
+  const fair = estimateFairPrice(auction.cellId, state, bidder.id, board, rentTables, difficultyId);
   const score = scoreProperty(auction.cellId, state, bidder.id, board, rentTables, skill);
   const minBid = auction.bid + 1;
   const auctionThreshold = skill.buyThreshold - 10;
@@ -272,7 +283,7 @@ const RENT_WEIGHT = { 0: 1.2, 1: 1.5, 2: 1.8, 3: 2.2, 4: 2.8 };
 
 export function pickBuildTarget(state, playerId, board, houseCost, ownsFullGroup, getGroupCellsFn) {
   const player = state.players[playerId];
-  const skill = getAISkill(state.difficultyId);
+  const skill = getAISkill(resolveAIDifficulty(state, playerId));
   let best = null;
   let bestScore = -1;
 
@@ -362,7 +373,7 @@ function unmortgageCost(cell) {
 
 export function pickPropertyToUnmortgage(state, playerId, board) {
   const player = state.players[playerId];
-  const skill = getAISkill(state.difficultyId);
+  const skill = getAISkill(resolveAIDifficulty(state, playerId));
   const reserve = getCashReserve(skill, player, state, playerId);
   let target = null;
   let bestScore = -Infinity;
@@ -416,7 +427,7 @@ export function pickPropertyToUnmortgage(state, playerId, board) {
 }
 
 function estimateTradeSideValue(state, playerId, propIds, money, jailCards, board, rentTables) {
-  const skill = getAISkill(state.difficultyId);
+  const skill = getAISkill(resolveAIDifficulty(state, playerId));
   let value = money + jailCards * 45;
   propIds.forEach((id) => {
     value += scoreProperty(id, state, playerId, board, rentTables, skill) * 2;

@@ -49,6 +49,8 @@ export default {
   icon: '🎉',
   tagline: 'Barras, discos, VIP y la resaca del siglo.',
 
+  defaultPlayerNames: ['Carla', 'Marcos', 'DJ Loko', 'La Reina', 'El Boss', 'Resaca'],
+
   colors: {
     brown: { bg: '#92400E', light: '#FBBF24', name: 'Shots & Cerveza' },
     lightblue: { bg: '#7C3AED', light: '#C4B5FD', name: 'Barras de Licor' },

@@ -49,6 +49,8 @@ export default {
   icon: '🚀',
   tagline: 'Levanta rondas, escala startups y domina el ecosistema tech.',
 
+  defaultPlayerNames: ['Jobs', 'Gates', 'Musk', 'Zuckerberg', 'Bezos', 'Altman'],
+
   colors: {
     brown: { bg: '#78350F', light: '#FBBF24', name: 'Early Stage' },
     lightblue: { bg: '#0284C7', light: '#7DD3FC', name: 'Marketplace' },

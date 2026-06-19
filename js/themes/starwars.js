@@ -49,6 +49,8 @@ export default {
   icon: '⚔️',
   tagline: 'Conquista la galaxia, domina rutas hiperespaciales y forja tu imperio.',
 
+  defaultPlayerNames: ['Luke', 'Leia', 'Han Solo', 'Yoda', 'Obi-Wan', 'Chewie'],
+
   colors: {
     brown: { bg: '#8B6914', light: '#D4A84B', name: 'Mundos del Desierto' },
     lightblue: { bg: '#1565C0', light: '#90CAF9', name: 'Mundos del Núcleo' },

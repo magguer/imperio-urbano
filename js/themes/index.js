@@ -22,6 +22,12 @@ export function getTheme(id) {
   return THEMES.find((t) => t.id === id) || defaultTheme;
 }
 
+export function getThemeDefaultPlayerName(themeId, index) {
+  const names = getTheme(themeId).defaultPlayerNames;
+  if (Array.isArray(names) && names[index]) return names[index];
+  return '';
+}
+
 export function applyThemeToDOM(theme) {
   document.documentElement.dataset.theme = theme.id;
   document.title = `${theme.strings.gameName} — Juego de Mesa Local`;

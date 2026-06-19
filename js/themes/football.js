@@ -49,6 +49,8 @@ export default {
   icon: '⚽',
   tagline: 'Conquista clubes legendarios y domina el fútbol planetario.',
 
+  defaultPlayerNames: ['Messi', 'Pelé', 'Maradona', 'Ronaldo', 'Zidane', 'Cruyff'],
+
   colors: {
     brown: { bg: '#78350F', light: '#FCD34D', name: 'Europa Clásica' },
     lightblue: { bg: '#0369A1', light: '#7DD3FC', name: 'Calcio' },

@@ -49,6 +49,8 @@ export default {
   icon: '🌍',
   tagline: 'Conquista naciones, rutas globales y recursos del planeta.',
 
+  defaultPlayerNames: ['Colón', 'Magallanes', 'Amundsen', 'Cook', 'Hillary', 'Cousteau'],
+
   colors: {
     brown: { bg: '#6B4226', light: '#A67B5B', name: 'Microestados' },
     lightblue: { bg: '#1E90FF', light: '#87CEFA', name: 'Islas del Pacífico' },

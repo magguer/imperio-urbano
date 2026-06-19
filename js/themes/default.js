@@ -49,6 +49,8 @@ export default {
   icon: '🏙️',
   tagline: 'Construye tu imperio inmobiliario en la gran ciudad.',
 
+  defaultPlayerNames: ['Magnate', 'Inversor', 'Empresario', 'Constructor', 'Visionario', 'Capitalista'],
+
   colors: {
     brown: { bg: '#8B4513', light: '#D2691E', name: 'Barrio Antiguo' },
     lightblue: { bg: '#87CEEB', light: '#B0E0E6', name: 'Costa' },

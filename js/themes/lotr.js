@@ -49,6 +49,8 @@ export default {
   icon: '💍',
   tagline: 'Recorre la Tierra Media, forja alianzas y conquista reinos.',
 
+  defaultPlayerNames: ['Aragorn', 'Gandalf', 'Frodo', 'Legolas', 'Gimli', 'Sam'],
+
   boardBg: 'bg_lotr_theme.png',
 
   // Índices del tablero clásico (40 casillas). Ver js/themes/cellArt.js

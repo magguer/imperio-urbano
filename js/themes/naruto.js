@@ -49,6 +49,8 @@ export default {
   icon: '🍥',
   tagline: 'Domina aldeas, misiones y el camino del ninja.',
 
+  defaultPlayerNames: ['Naruto', 'Sasuke', 'Sakura', 'Kakashi', 'Gaara', 'Shikamaru'],
+
   colors: {
     brown: { bg: '#92400E', light: '#FCD34D', name: 'Konoha Inicial' },
     lightblue: { bg: '#0369A1', light: '#7DD3FC', name: 'Misiones Clásicas' },
